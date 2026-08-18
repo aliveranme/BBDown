@@ -280,7 +280,7 @@ public static class LiveStreamUtil
                     // 按瞬态故障退避重连。
                     await BackoffAsync(ex);
                 }
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException)
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException or LiveStreamWriteException)
                 {
                     // 直播间下播（"当前未在直播"）是终结态而非可恢复故障：正常结束，走合成保存
                     if (ex is InvalidOperationException && ex.Message.Contains("当前未在直播"))
@@ -298,6 +298,14 @@ public static class LiveStreamUtil
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的合成保存再退出
+        }
+        catch (Exception)
+        {
+            // 发生终结态异常（LiveStreamUnavailableException / LiveStreamWriteException）或未捕获异常退出时：
+            // 若尚未录入任何有效分段，清理本次创建的空会话目录与根目录，避免在磁盘留下空残留。
+            if (total == 0 || segmentFiles.Count == 0)
+                CleanupSessionDir(segDir, segRoot);
+            throw;
         }
 
         // 未收到任何字节：不生成空文件，返回 NoData 让调用方明确失败
@@ -411,8 +419,9 @@ public static class LiveStreamUtil
     /// </summary>
     internal static bool TrimFlvTail(string path)
     {
-        // FLV 标签类型：0x08 音频 / 0x09 视频 / 0x12 脚本(元数据) / 0x16-0x18 enhanced-flv
-        static bool IsTagType(int t) => t is 0x08 or 0x09 or 0x12 or 0x16 or 0x17 or 0x18;
+        // FLV 标签类型：0x08 音频 / 0x09 视频 / 0x12 脚本(元数据) / 0x16-0x18 Enhanced FLV 扩展
+        // 掩码 0x1F 过滤高位 Filter 标志（Adobe FLV 标准：Bit 5 标识是否需要预处理/加密）
+        static bool IsTagType(int t) => (t & 0x1F) is 0x08 or 0x09 or 0x12 or 0x16 or 0x17 or 0x18;
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);

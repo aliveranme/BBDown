@@ -523,6 +523,69 @@ public class LiveStreamUtilTests
         }
     }
 
+    /// <summary>
+    /// 当 FLV 标签首字节包含 Filter 位（Bit 5，如 0x29 对应带 Filter 的视频标签）时，
+    /// TrimFlvTail 掩码过滤后仍应正确识别合法标签并裁剪截断尾。
+    /// </summary>
+    [Fact]
+    public void TrimFlvTail_WithFilterBit_RemovesTruncatedTag()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-trim-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "seg.flv");
+        try
+        {
+            var complete = new byte[0];
+            complete = Concat(complete, new byte[] { 0x46, 0x4C, 0x56, 0x01, 0x05, 0x00, 0x00, 0x00, 0x09 });
+            complete = Concat(complete, new byte[] { 0, 0, 0, 0 });
+            // 带 Filter 标志的视频标签：0x20 | 0x09 = 0x29
+            complete = Concat(complete, BuildFlvTag(0x29, new byte[64], Array.Empty<byte>()));
+            long goodEnd = complete.Length;
+            // 截断尾
+            complete = Concat(complete, BuildFlvTag(0x29, new byte[64], Array.Empty<byte>(), declaredPayload: 200));
+            File.WriteAllBytes(path, complete);
+
+            bool trimmed = LiveStreamUtil.TrimFlvTail(path);
+
+            Assert.True(trimmed);
+            Assert.Equal(goodEnd, new FileInfo(path).Length);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 当发生终结态异常（如直播间无 FLV）时，DownloadToFileAsync 退出时不应残留空的 .segs 会话目录。
+    /// </summary>
+    [Fact]
+    public async Task DownloadToFile_UnavailableException_CleansUpEmptySegsDir()
+    {
+        using var server = new FakeLiveServer();
+        server.IsLive = true;
+        server.PlayBodies.Enqueue(server.PlayBody(flv: false, qn: 30000));
+        server.PlayBodies.Enqueue(server.PlayBody(flv: false, qn: 10000));
+
+        var dir = Path.Combine(Path.GetTempPath(), "live-fail-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        try
+        {
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+            await Assert.ThrowsAsync<LiveStreamUtil.LiveStreamUnavailableException>(
+                () => LiveStreamUtil.DownloadToFileAsync("12345", outPath, null, CancellationToken.None));
+
+            Assert.False(Directory.Exists(outPath + ".segs"), "抛出终结态异常后不应残留 .segs 空目录");
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     private static byte[] BuildFlvTag(int type, byte[] payload, byte[] extra, int? declaredPayload = null)
     {
         int declared = declaredPayload ?? payload.Length + extra.Length;

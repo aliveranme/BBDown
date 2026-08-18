@@ -367,7 +367,7 @@ public static partial class BBDownUtil
             var is_login = json.GetPropertySafe("data").GetPropertySafe("isLogin").GetBoolean();
             return (is_login, false, newWbi);
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or TimeoutException)
         {
             Logger.LogDebug("检测登录状态失败: {0}", ex.Message);
             return (false, false, null);
