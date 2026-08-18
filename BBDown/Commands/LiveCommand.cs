@@ -17,6 +17,14 @@ public class LiveSettings : CommandSettings
     [CommandOption("-o|--output")]
     [Description("输出文件路径(默认: 直播间标题_直播录制_时间.flv)")]
     public string? Output { get; set; }
+
+    [CommandOption("-c|--cookie")]
+    [Description("设置字符串cookie(不设置则自动读取本地 BBDown.data 登录凭据)")]
+    public string Cookie { get; set; } = "";
+
+    [CommandOption("--access-token")]
+    [Description("设置access_token")]
+    public string AccessToken { get; set; } = "";
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
@@ -41,14 +49,22 @@ public class LiveCommand : Command<LiveSettings>
                     BBDownMuxer.FFMPEG = binPath;
                 }
 
+                // 加载登录凭据（--cookie 显式传入优先，否则读取本地 BBDown.data）：
+                // 直播画质接口 getRoomPlayInfo 对未登录请求只返回游客画质（最高 720P），
+                // 带 Cookie 才返回账号可看的最高画质（原画/杜比/4K 按账号权限）。
+                // 此前 live 命令不加载凭据，已登录用户也只能录到 720P。
+                var myOption = new MyOption { Cookie = settings.Cookie, AccessToken = settings.AccessToken };
+                AppSettings? session = await Program.InitializeRequestSessionAsync(myOption, cancellationToken);
+                if (session is not null) Config.Apply(session);
+
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
-                var (_, title, uname, _) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
-                Logger.Log($"直播间: {title} (UP: {uname})");
+                var (_, title, uname, _, quality) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
+                Logger.Log($"直播间: {title} (UP: {uname})，画质: {LiveStreamUtil.QualityName(quality)} (qn={quality})");
                 string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv";
-                Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止，断流自动重连)");
+                Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止；断流/网络中断自动重连续录)");
 
                 DateTime lastLog = DateTime.MinValue;
-                // 传 roomId：断流/地址过期时内部重新解析流地址续录
+                // 传 roomId：断流/地址过期/网络中断时内部重新解析流地址续录
                 var recordResult = await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
                 {
                     if (DateTime.Now - lastLog >= TimeSpan.FromSeconds(5))
