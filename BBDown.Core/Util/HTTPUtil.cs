@@ -73,6 +73,19 @@ public static partial class HTTPUtil
     /// </summary>
     public static HttpClient VerifiedAppHttpClient => _appHttpClient.Value;
 
+    // 始终校验 + 禁自动跳转的专用池：与 _appHttpClient 同超时、同校验策略，仅重定向策略不同。
+    private static readonly Lazy<HttpClient> _verifiedNoRedirectClient =
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(2), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    /// <summary>
+    /// 始终校验证书且禁自动跟随重定向的共享客户端：供携带签名载荷的非幂等请求使用
+    /// （WidevineCdm 许可证 POST）。VerifiedAppHttpClient（AllowAutoRedirect=true）会把
+    /// 307/308 连同 body 重放到跨主机目标——许可证请求体是设备私钥签名的 challenge，
+    /// 随重定向重放即签名外发；此处 3xx 由调用方显式拦截（与 gRPC POST 的 B3-F2 收口同构）。
+    /// 与 VerifiedAppHttpClient 同样不受 --insecure 影响（独立于不安全池，不能由用户选项降级）。
+    /// </summary>
+    public static HttpClient VerifiedNoRedirectClient => _verifiedNoRedirectClient.Value;
+
     /// <summary>
     /// 媒体下载专用客户端：禁用自动跟随重定向（B3-F3）。下载请求携带登录 Cookie，
     /// 且 URL 由 B 站播放接口（受信任源）返回——若开启自动跳转，一个被篡改/被攻破的
@@ -730,7 +743,7 @@ public static partial class HTTPUtil
             {
                 // 本函数仅服务幂等查询（PlayView gRPC 播放地址、字幕 gRPC）：重发不改变
                 // 服务端状态，连接级失败（StatusCode null）与 5xx 均可安全有界重试。
-                // 真正的非幂等请求（Widevine 许可证）走 VerifiedAppHttpClient 直连
+                // 真正的非幂等请求（Widevine 许可证）走 VerifiedNoRedirectClient 直连
                 // （WidevineCdm.cs），不经过本函数的重试逻辑。
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API POST 失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));

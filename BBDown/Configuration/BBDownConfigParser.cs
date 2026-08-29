@@ -63,6 +63,36 @@ internal static partial class BBDownConfigParser
         return false;
     }
 
+    /// <summary>
+    /// 提取命令行中的位置参数（即下载 URL 的候选位置）。识别"已显式给出 URL"时
+    /// 只扫位置参数、不扫全部 argv：选项的值可能恰好形似 URL（如
+    /// --aria2c-proxy http://127.0.0.1:7890、--work-dir av123），把"URL 在配置文件 +
+    /// 命令行有 URL 形值选项"误判成"命令行已给出 URL"，配置文件里的 URL 被丢弃后
+    /// Spectre 报缺少必填参数，用户难以定位（RF-7）。
+    /// 与 <see cref="IsSubCommandInvocation"/> 同构：需要值的选项吞掉下一 token，
+    /// bool 开关与 "--opt=value" 写法不吞。
+    /// </summary>
+    internal static List<string> GetPositionalTokens(string[] args)
+    {
+        var aliasMap = BuildAliasMap();
+        var positionals = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!arg.StartsWith('-'))
+            {
+                positionals.Add(arg);
+                continue;
+            }
+            var token = arg;
+            var eq = token.IndexOf('=');
+            if (eq > 0) continue; // "--opt=value"：值已含在 token 内，不消耗下一项
+            if (aliasMap.TryGetValue(token, out var canonical) && !FlagOptionCanonicals.Contains(canonical))
+                i++; // 该选项需要值：下一 token 是它的值，跳过
+        }
+        return positionals;
+    }
+
     public static List<string> MergeWithConfig(string[] cliArgs)
     {
         var result = new List<string>(cliArgs);
@@ -133,7 +163,9 @@ internal static partial class BBDownConfigParser
         // 命令行已显式给出 URL 时，配置文件里的位置参数（URL）不再合并，
         // 否则 MyOption 只声明一个 <URL> 位置参数，Spectre 会报 unexpected positional argument。
         // 与"命令行显式给出的选项必须压过配置文件"的合并原则保持一致。
-        bool cliHasUrl = cliArgs.Any(a => UrlLikeToken().IsMatch(a));
+        // 只对位置参数应用 URL 启发式（RF-7）：全量扫描会把选项值（--aria2c-proxy 的
+        // 代理地址、--work-dir 的 av123 等）误判为 URL，丢弃配置文件里的真实 URL。
+        bool cliHasUrl = GetPositionalTokens(cliArgs).Any(a => UrlLikeToken().IsMatch(a));
 
         var explicitOptions = new HashSet<string>();
         for (int i = 0; i < cliArgs.Length; i++)
