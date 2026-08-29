@@ -81,14 +81,18 @@ public static partial class Parser
         //Console.WriteLine(api);
         string webJson = await HTTPUtil.GetWebSourceAsync(api, token: token);
         //以下情况从网页源代码尝试解析
-        if (webJson.Contains("\"大会员专享限制\""))
+        if (IsVipRestrictedResponse(webJson))
         {
             Logger.Log("此视频需要大会员，您大概率需要登录一个有大会员的账号才可以下载，尝试从网页源码解析");
             // 该回退只对番剧成立：UGC 的 epId 为空，构造 /bangumi/play/ep<空> 会拿到
             // 无效页面并被 PlayerJsonRegex 误替换成空/垃圾内容，导致后续解析失败
             if (!string.IsNullOrEmpty(epId))
             {
-                string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
+                // 镜像站（BiliPlus 等）场景：番剧接口走 Config.Current.EpHost，回退抓取的
+                // 网页源也应跟随配置的主机，否则镜像站用户会被重定向回官方域名（可能不可达）。
+                // 默认配置 EpHost 即官方 api 主机，直接替换即可；非默认时用配置的镜像主机。
+                string webHost = Config.Current.EpHost == "api.bilibili.com" ? "www.bilibili.com" : Config.Current.EpHost;
+                string webUrl = $"{WithApiScheme(webHost)}/bangumi/play/ep{epId}";
                 string webSource = await HTTPUtil.GetWebSourceAsync(webUrl, token: token, rejectHtml: false);
                 var match = PlayerJsonRegex().Match(webSource);
                 // 页面不含 window.__playinfo__（登录墙/错误页/风控页）时 Groups[1] 为空串，
@@ -99,6 +103,28 @@ public static partial class Parser
             }
         }
         return webJson;
+    }
+
+    /// <summary>
+    /// 判定 playurl API 响应是否为"大会员专享限制"错误。
+    /// 优先解析 JSON 根对象的 message 字段（B 站当前返回
+    /// {"code":-10403,"message":"大会员专享限制",...}）；子串匹配对文案措辞变化
+    /// 脆弱（改文案即失效），仅在响应不是合法 JSON 时作为兜底。
+    /// </summary>
+    internal static bool IsVipRestrictedResponse(string webJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(webJson);
+            return doc.RootElement.TryGetProperty("message", out var msg)
+                && msg.ValueKind == JsonValueKind.String
+                && msg.GetString()?.Contains("大会员专享限制") == true;
+        }
+        catch (JsonException)
+        {
+            // 非 JSON 响应（风控 HTML 等）：退回原子串匹配兜底
+            return webJson.Contains("\"大会员专享限制\"");
+        }
     }
 
     private static async Task<string> GetPlayJsonAsync(string aid, string cid, string epId, string qn, string code = "0", CancellationToken token = default)
@@ -722,6 +748,7 @@ public static partial class Parser
 
     [GeneratedRegex("window.__playinfo__=([\\s\\S]*?)<\\/script>")]
     private static partial Regex PlayerJsonRegex();
-    [GeneratedRegex("http.*:\\d+")]
-    private static partial Regex BaseUrlRegex();
+    // internal 供测试直接验证：只匹配主机:端口，query 中的 ":数字" 不得误判为端口
+    [GeneratedRegex("^https?://[^/:]+:\\d+")]
+    internal static partial Regex BaseUrlRegex();
 }

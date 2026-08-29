@@ -40,4 +40,33 @@ public class ParserPlayLimitTests
         using var doc = JsonDocument.Parse(json);
         Parser.ThrowIfBizError(doc.RootElement); // 不应抛异常
     }
+
+    // ── RF-11-P1：大会员回退判定改 JSON message 字段解析（不再依赖裸子串匹配）──
+
+    [Theory]
+    [InlineData("""{"code":-10403,"message":"大会员专享限制"}""", true)]
+    [InlineData("""{"code":-10403,"message":"大会员专享限制","data":{}}""", true)]
+    [InlineData("""{"code":0,"message":"success","data":{}}""", false)]      // 正常响应
+    [InlineData("""{"code":-10403,"message":"版权受限"}""", false)]           // 其它限制文案不算大会员
+    [InlineData("""{"data":{}}""", false)]                                    // 无 message
+    public void IsVipRestrictedResponse_ReadsJsonMessageField(string json, bool expected)
+        => Assert.Equal(expected, Parser.IsVipRestrictedResponse(json));
+
+    [Theory]
+    [InlineData("""<html>window.__playinfo__="大会员专享限制"</html>""", true)]  // 非 JSON 兜底子串
+    [InlineData("<html>risk-control</html>", false)]                            // 非 JSON 无命中
+    public void IsVipRestrictedResponse_NonJson_FallsBackToSubstring(string body, bool expected)
+        => Assert.Equal(expected, Parser.IsVipRestrictedResponse(body));
+
+    // ── RF-11-P2：BaseUrlRegex 收紧（query 中的 ":数字" 不得误判为端口）──
+
+    [Theory]
+    [InlineData("http://host:8080/path", true)]
+    [InlineData("https://host:443/", true)]
+    [InlineData("http://upos-sz.example.com:8443/a.m4s?b=1", true)]
+    [InlineData("http://host/path?x=1:2", false)]   // query 含 :数字 不误判为端口
+    [InlineData("https://host/path", false)]         // 无端口
+    [InlineData("host:8080/path", false)]            // 缺 scheme
+    public void BaseUrlRegex_MatchesOnlyHostPort(string url, bool expected)
+        => Assert.Equal(expected, Parser.BaseUrlRegex().IsMatch(url));
 }
