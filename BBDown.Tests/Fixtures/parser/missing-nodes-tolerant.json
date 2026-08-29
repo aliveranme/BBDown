@@ -1,0 +1,30 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "dash": {
+      "duration": 100,
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "bandwidth": 1000000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "30",
+          "size": 12500000,
+          "base_url": "https://upos.example.com/tolerant80.m4s"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 320000,
+          "base_url": "https://upos.example.com/tolerant30280.m4s"
+        }
+      ]
+    }
+  }
+}

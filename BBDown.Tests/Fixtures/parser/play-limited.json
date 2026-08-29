@@ -1,0 +1,15 @@
+{
+  "code": 0,
+  "message": "success",
+  "result": {
+    "play_check": {
+      "limit_play_reason": "VIP_LIMIT",
+      "play_detail": "需要大会员"
+    },
+    "dash": {
+      "duration": 1400,
+      "video": [],
+      "audio": []
+    }
+  }
+}

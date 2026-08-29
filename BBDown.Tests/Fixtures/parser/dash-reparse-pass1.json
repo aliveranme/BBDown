@@ -1,0 +1,40 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "dash": {
+      "duration": 200,
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "bandwidth": 2000000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "30",
+          "size": 50000000,
+          "base_url": "https://upos.example.com/repass-80.m4s"
+        },
+        {
+          "id": 64,
+          "codecid": 7,
+          "bandwidth": 1000000,
+          "width": 1280,
+          "height": 720,
+          "frame_rate": "30",
+          "size": 25000000,
+          "base_url": "https://upos.example.com/repass-64.m4s"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 320000,
+          "base_url": "https://upos.example.com/repass-30280.m4s"
+        }
+      ]
+    }
+  }
+}

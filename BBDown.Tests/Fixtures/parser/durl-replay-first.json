@@ -1,0 +1,22 @@
+{
+  "code": 0,
+  "quality": 80,
+  "video_codecid": 7,
+  "timelength": 6215000,
+  "accept_quality": [
+    "80",
+    "64"
+  ],
+  "durl": [
+    {
+      "url": "https://upos.example.com/replay-seg1.flv",
+      "size": 800000,
+      "length": 3000000
+    },
+    {
+      "url": "https://upos.example.com/replay-seg2.flv",
+      "size": 900000,
+      "length": 3215000
+    }
+  ]
+}

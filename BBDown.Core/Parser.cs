@@ -22,6 +22,17 @@ public static partial class Parser
         return $"{api}&w_rid=" + Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(api + Config.Current.Wbi)));
     }
 
+    /// <summary>
+    /// 为 API 主机补默认 https scheme。默认配置（无 scheme，如 api.bilibili.com）与原硬编码
+    /// https 行为完全一致；主机自带 scheme（本地调试/测试夹具服务器定向，如 http://127.0.0.1:port）
+    /// 时原样保留——否则 https://{Host} 会拼出 "https://http://..." 的畸形 URL。
+    /// </summary>
+    private static string WithApiScheme(string hostAndPath)
+        => hostAndPath.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || hostAndPath.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? hostAndPath
+            : $"https://{hostAndPath}";
+
     private static async Task<string> GetPlayJsonAsync(string encoding, string aidOri, string aid, string cid, string epId, bool tvApi, bool intl, bool appApi, bool wantDrm, string qn = "0", CancellationToken token = default)
     {
         Logger.LogDebug("aid={0},cid={1},epId={2},tvApi={3},IntlApi={4},appApi={5},qn={6}", aid, cid, epId, tvApi, intl, appApi, qn);
@@ -36,8 +47,8 @@ public static partial class Parser
         if (appApi) return await AppHelper.DoReqAsync(aid, cid, epId, qn, bangumi, encoding, Config.Current.Token, token);
 
         string prefix = tvApi ? bangumi ? $"{Config.Current.TvHost}/pgc/player/api/playurltv" : $"{Config.Current.TvHost}/x/tv/playurl"
-            : bangumi ? $"{Config.Current.Host}/pgc/player/web/v2/playurl" : "api.bilibili.com/x/player/wbi/playurl";
-        prefix = $"https://{prefix}?";
+            : bangumi ? $"{Config.Current.Host}/pgc/player/web/v2/playurl" : $"{Config.Current.Host}/x/player/wbi/playurl";
+        prefix = $"{WithApiScheme(prefix)}?";
 
         string api;
         if (tvApi)
@@ -93,7 +104,7 @@ public static partial class Parser
     private static async Task<string> GetPlayJsonAsync(string aid, string cid, string epId, string qn, string code = "0", CancellationToken token = default)
     {
         bool isBiliPlus = Config.Current.Host != "api.bilibili.com";
-        string api = $"https://{(isBiliPlus ? Config.Current.Host : "api.biliintl.com")}/intl/gateway/v2/ogv/playurl?";
+        string api = $"{WithApiScheme(isBiliPlus ? Config.Current.Host : "api.biliintl.com")}/intl/gateway/v2/ogv/playurl?";
 
         StringBuilder paramBuilder = new();
         if (Config.Current.Token != "") paramBuilder.Append($"access_key={Config.Current.Token}&");
