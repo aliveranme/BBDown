@@ -32,9 +32,9 @@ public class ServeSettings : CommandSettings
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
-public class ServeCommand : Command<ServeSettings>
+public class ServeCommand : AsyncCommand<ServeSettings>
 {
-    protected override int Execute(CommandContext context, ServeSettings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, ServeSettings settings, CancellationToken cancellationToken)
     {
         _ = BBDownUtil.CheckUpdateAsync(cancellationToken);
         try
@@ -50,7 +50,7 @@ public class ServeCommand : Command<ServeSettings>
             var serveToken = ResolveServeToken(settings.ServeToken, Environment.GetEnvironmentVariable("BBDOWN_SERVE_TOKEN"));
             // 默认安全边界的前置校验：非回环监听（0.0.0.0 / :: / 具体网卡 IP）会把任务
             // 端点暴露到局域网/公网，必须显式配置 --serve-token 才能启动。
-            // 这里给出可读错误；BBDownApiServer.Run 内还有兜底防御（InvalidOperationException）。
+            // 这里给出可读错误；BBDownApiServer.RunAsync 内还有兜底防御（InvalidOperationException）。
             if (!IsLoopbackListenUrl(settings.ListenUrl) && string.IsNullOrEmpty(serveToken))
             {
                 Logger.LogError(
@@ -58,7 +58,7 @@ public class ServeCommand : Command<ServeSettings>
                     $"非回环监听必须配置 --serve-token 才能启动，否则任意客户端都能提交任务并访问本机文件。");
                 return 1;
             }
-            Program.StartServer(settings.ListenUrl, settings.MaxConcurrent, serveToken, settings.NotifyWebhook, cancellationToken, settings.TrustedProxy);
+            await Program.StartServerAsync(settings.ListenUrl, settings.MaxConcurrent, serveToken, settings.NotifyWebhook, cancellationToken, settings.TrustedProxy);
             return 0;
         }
         catch (OperationCanceledException)

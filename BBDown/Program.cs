@@ -217,7 +217,7 @@ partial class Program
         }).ToArray();
     }
 
-    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default, bool trustProxy = false)
+    internal static async Task StartServerAsync(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default, bool trustProxy = false)
     {
         var defaultListenUrl = "http://127.0.0.1:23333";
         // serve 为长驻进程：标记模式，此后各任务的 --work-dir 不再写进程 CWD
@@ -227,11 +227,11 @@ partial class Program
         server.SetupServer();
         try
         {
-            server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
+            await server.RunAsync(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
         }
         finally
         {
-            // 关停后释放持久日志 writer 的文件句柄（Run 可能抛异常，finally 保证释放）
+            // 关停后释放持久日志 writer 的文件句柄（RunAsync 可能抛异常，finally 保证释放）
             Logger.CloseFile();
         }
     }
