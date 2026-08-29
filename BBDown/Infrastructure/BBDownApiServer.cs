@@ -503,7 +503,9 @@ public partial class BBDownApiServer
     /// 认证失败限速判定：1 分钟滑动窗口内失败次数达到阈值返回 true（拒绝服务）。
     /// 每次失败都调用本方法登记；限速状态按来源 IP 隔离，同机合法客户端不受影响。
     /// 窗口过期的空条目会被移除，防止攻击者用大量一次性 IP 轰炸时字典无限增长
-    /// （每 IP 一条永不清除的空 list）；字典超过上限时顺带清理全部过期条目。
+    /// （每 IP 一条永不清除的空 list）。攻击者持续用新 IP/XFF 值时每条都是"最近失败"
+    /// 不过期，仅删过期条目约束不住字典大小——字典超过上限时按最后失败时间裁剪，
+    /// 只保留最近活跃的 <see cref="MaxTrackedAuthFailureIps"/> 条。
     /// internal 供测试直接验证滑动窗口阈值。
     /// </summary>
     internal bool IsAuthLockedOut(string clientIp)
@@ -517,6 +519,17 @@ public partial class BBDownApiServer
             {
                 foreach (var stale in _authFailures.Where(kv => kv.Value.Count == 0 || now - kv.Value[^1] > TimeSpan.FromMinutes(1)).ToList())
                     _authFailures.Remove(stale.Key);
+                // 新 IP 持续轰炸时过期清理后仍超上限：按最后失败时间裁剪，保留最近
+                // 活跃的上限条，其余移除，保证字典有界（O(n log n) 仅在异常规模触发）。
+                if (_authFailures.Count > MaxTrackedAuthFailureIps)
+                {
+                    var overflow = _authFailures
+                        .OrderBy(kv => kv.Value[^1]) // 最后失败时间最旧的最先裁剪
+                        .Take(_authFailures.Count - MaxTrackedAuthFailureIps)
+                        .Select(kv => kv.Key)
+                        .ToList();
+                    foreach (var key in overflow) _authFailures.Remove(key);
+                }
             }
             if (!_authFailures.TryGetValue(clientIp, out var list))
             {
@@ -656,6 +669,8 @@ public partial class BBDownApiServer
     /// <summary>
     /// 在 <see cref="_taskLock"/> 持锁前提下，按保留策略截断已完成任务列表：
     /// 超龄记录与超出 <see cref="MaxFinishedTasks"/> 的溢出记录被移除。
+    /// 列表按完成顺序追加，与创建顺序无关——裁剪溢出时必须按创建时间排序，
+    /// 移除最旧创建的，保留最新的（此前直接 RemoveRange 头部会误删"后创建但先完成"的任务）。
     /// </summary>
     private void TrimFinishedTasksLocked()
     {
@@ -666,7 +681,12 @@ public partial class BBDownApiServer
         finishedTasks.RemoveAll(t => t.TaskCreateTime < cutoff);
         if (finishedTasks.Count > MaxFinishedTasks)
         {
-            finishedTasks.RemoveRange(0, finishedTasks.Count - MaxFinishedTasks);
+            // 只移除最旧创建的溢出条目，保留其余任务的原顺序（API 按完成顺序展示）
+            var toRemove = finishedTasks
+                .OrderBy(t => t.TaskCreateTime)
+                .Take(finishedTasks.Count - MaxFinishedTasks)
+                .ToHashSet();
+            finishedTasks.RemoveAll(t => toRemove.Contains(t));
         }
     }
 

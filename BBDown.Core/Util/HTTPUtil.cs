@@ -162,6 +162,9 @@ public static partial class HTTPUtil
     private static HttpClient NoRedirectClient =>
         Config.Current.SkipSslCheck ? _insecureNoRedirectClient.Value : _noRedirectClient.Value;
 
+    /// <summary>手动逐跳重定向校验的最大跳数（防开放重定向无限循环）。</summary>
+    private const int MaxRedirectHops = 10;
+
     private static readonly string[] platforms = { "Windows NT 10.0; Win64", "Macintosh; Intel Mac OS X 10_15", "X11; Linux x86_64" };
 
     private static string RandomVersion(int minInclusive, int maxInclusive)
@@ -230,34 +233,53 @@ public static partial class HTTPUtil
         {
             try
             {
-                using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-                webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
-                webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
-                if (!string.IsNullOrEmpty(Config.Current.Cookie))
-                    webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
-                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
-                webRequest.Headers.Connection.Clear();
+                // 重定向逐跳校验：登录轮询携带操作者 Cookie，若自动跟随 3xx，被攻破的
+                // passport 域名或开放重定向可把带凭据的请求与响应 Set-Cookie 凭证引向任意
+                // 主机（B3-S1 纵深防御）。改用禁自动跳转客户端手动逐跳，每一跳的 Location
+                // 在发起下一跳前必须通过 IsTrustedCookieHost，与 GetWebSourceAnonymousCheckedAsync 同构。
+                string current = url;
+                for (int hop = 0; hop < MaxRedirectHops; hop++)
+                {
+                    using var webRequest = new HttpRequestMessage(HttpMethod.Get, current);
+                    webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
+                    webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                    if (!string.IsNullOrEmpty(Config.Current.Cookie))
+                        webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
+                    webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                    webRequest.Headers.Connection.Clear();
 
-                Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(url));
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
-                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
-                // 登录接口同样参与服务器时钟校准（响应头 Date）：与其它 API 调用保持一致，
-                // 否则依赖签名时间戳的后续请求在校准缺失下可能因时钟偏差被拒。
-                // 用 fromVerifiedPool 区分：--insecure 连接的 Date 头由中间人可控，不写全局偏移
-                CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
-                // 5xx 显式抛错走下方退避；4xx 交给 EnsureSuccessStatusCode 立即抛出（不重试）
-                if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
-                    throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
-                webResponse.EnsureSuccessStatusCode();
+                    Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(current));
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
+                    using var webResponse = await NoRedirectClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                    // 登录接口同样参与服务器时钟校准（响应头 Date）：与其它 API 调用保持一致，
+                    // 否则依赖签名时间戳的后续请求在校准缺失下可能因时钟偏差被拒。
+                    // 用 fromVerifiedPool 区分：--insecure 连接的 Date 头由中间人可控，不写全局偏移
+                    CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
+                    if ((int)webResponse.StatusCode is >= 300 and < 400)
+                    {
+                        var location = webResponse.Headers.Location;
+                        if (location is null) break;
+                        var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                        if (!IsTrustedCookieHost(next.ToString()))
+                            throw new InvalidOperationException($"重定向目标未通过可信主机校验: {SensitiveDataMasker.MaskUrl(next.ToString())}");
+                        current = next.ToString();
+                        continue;
+                    }
+                    // 5xx 显式抛错走下方退避；4xx 交给 EnsureSuccessStatusCode 立即抛出（不重试）
+                    if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
+                        throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
+                    webResponse.EnsureSuccessStatusCode();
 
-                string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
-                // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
-                // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
-                if (Config.Current.DebugLog)
-                    Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
-                List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
-                return (htmlCode, setCookies);
+                    string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
+                    // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
+                    // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
+                    if (Config.Current.DebugLog)
+                        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+                    List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
+                    return (htmlCode, setCookies);
+                }
+                throw new HttpRequestException($"重定向跳数超过上限 ({MaxRedirectHops})");
             }
             catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
             {

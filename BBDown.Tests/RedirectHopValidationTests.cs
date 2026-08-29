@@ -1,8 +1,8 @@
 using System.Net;
+using BBDown.Core;
 using BBDown.Core.Util;
 
 namespace BBDown.Tests;
-
 /// <summary>
 /// 逐跳重定向校验测试：验证 <see cref="HTTPUtil.GetWebLocationCheckedAsync"/> 在
 /// 每一跳的 Location 被请求之前就用回调校验，非可信目标会被拦截（不会真正访问）。
@@ -193,6 +193,58 @@ public class RedirectHopValidationTests
             _listener.Close();
             try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
             _cts.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task GetWebSourceWithSetCookiesAsync_UntrustedRedirect_ThrowsBeforeNextHop()
+    {
+        // 登录轮询携带操作者 Cookie（且响应 Set-Cookie 是新凭证下发通道）：若自动跟随
+        // 3xx，被攻破的入口或开放重定向可把带凭据的请求与响应引向任意主机。逐跳校验
+        // 必须在发起下一跳前拦截非可信 Location，绝不访问 evil.com。
+        using var server = new LocalRedirectServer(new()
+        {
+            { "/entry", (302, "http://evil.example.com/final") },
+        });
+        var baseUrl = $"http://127.0.0.1:{server.Port}";
+        var original = Config.Current;
+        try
+        {
+            Config.ApplyToCurrentAsyncFlow(original with { Cookie = "SESSDATA=secret" });
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HTTPUtil.GetWebSourceWithSetCookiesAsync($"{baseUrl}/entry", token: CancellationToken.None));
+            Assert.Contains("可信主机", ex.Message);
+            // 校验发生在发起下一跳网络请求之前：evil.com 绝不被访问（服务端只收到入口 1 次）
+            Assert.Equal(1, server.RequestCount);
+        }
+        finally
+        {
+            Config.ApplyToCurrentAsyncFlow(original);
+        }
+    }
+
+    [Fact]
+    public async Task GetWebSourceWithSetCookiesAsync_TrustedRedirect_FollowsAndReturnsBody()
+    {
+        // 同一可信主机内的重定向（相对 Location 落在回环服务上）应正常跟随并返回
+        // 终态 body：逐跳校验只拦截非可信目标，不破坏正常登录轮询链路。
+        using var server = new LocalRedirectServer(new()
+        {
+            { "/entry", (302, "/final") },
+        });
+        var baseUrl = $"http://127.0.0.1:{server.Port}";
+        var original = Config.Current;
+        try
+        {
+            Config.ApplyToCurrentAsyncFlow(original with { Cookie = "SESSDATA=secret" });
+            var (body, _) = await HTTPUtil.GetWebSourceWithSetCookiesAsync($"{baseUrl}/entry", token: CancellationToken.None);
+            Assert.NotNull(body);
+            // 入口 1 次 + 跟随 1 次
+            Assert.Equal(2, server.RequestCount);
+        }
+        finally
+        {
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 }

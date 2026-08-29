@@ -9,6 +9,10 @@
 - **特定区域设置下视频发布时间元数据丢失**：ffmpeg `creation_time` 时间戳的自定义格式未固定文化，`:` 在 fi-FI 等区域设置下被解析为时间分隔符占位符（产出形如 `19.30.00` 的非 ISO-8601 串），`av_parse_time` 解析失败后元数据静默丢失。现追加 `CultureInfo.InvariantCulture`。
 - **杜比视界自动切 mp4box 时封面静默丢失**：`-itags` 的 `cover` 值（本地封面路径）未按 mp4box itags 值转义规则处理，Windows 路径中的 `\` 被当转义序列消费。现与同函数其它 itags 值一致走 `EscapeString`。
 - **配置文件 URL 被 URL 形值的命令行选项误压制**：`BBDown.config` 中写了下载 URL、命令行又恰好携带值形似 URL 的选项（如 `--aria2c-proxy http://127.0.0.1:7890`、`--work-dir av123`）时，配置里的 URL 被误判"命令行已给出"而丢弃，Spectre 报缺少必填参数。现仅对位置参数应用 URL 启发式（选项值不再参与判定）。
+- **FLV 跳过下载路径残留临时元数据文件**：FLV 跳过路径未清理封面、字幕与章节文件，且章节清理此前仅匹配固定名 `chapters` 而未覆盖 muxer 产出的唯一名 `chapters-{basename}`。现与 DASH 分支行为对齐并在跳过/失败路径按 `chapters*` 前缀兜底清理。
+- **serve 已完成任务溢出裁剪按完成顺序误删**：`finishedTasks` 按完成时间追加，旧逻辑直接移除列表头部会误删"后创建但先完成"的任务。现改为按 `TaskCreateTime` 排序裁剪最旧创建的任务。
+- **Parser 大会员回退硬编码域名与子串匹配脆弱**：番剧大会员回退网页源硬编码 `www.bilibili.com`（忽略 `EpHost` 镜像配置）；大会员错误判定依赖裸子串 `\"大会员专享限制\"` 易受文案漂移影响。现 host 跟随配置，判定优先解析 JSON 根 `message` 字段。
+- **`BaseUrlRegex` 贪婪匹配误判 query 为端口**：原正则 `http.*:\d+` 会将 `http://host/path?x=1:2` 中 query 的 `:数字` 误判为端口。现收紧为 `^https?://[^/:]+:\d+`。
 
 ### 改进
 
@@ -17,10 +21,12 @@
 ### 安全性
 
 - **Widevine 许可证请求禁跟随重定向**：许可证 POST 的请求体是设备私钥签名的 challenge，原 `VerifiedAppHttpClient`（允许自动重定向）会在 307/308 上连同 body 重放到跨主机目标。新增 `VerifiedNoRedirectClient`（始终校验证书 + 禁自动重定向，独立连接池不受 `--insecure` 降级），3xx 显式报错不跟随（与 gRPC POST 的凭据收口同构）。
+- **serve 认证失败限速字典有界裁剪**：防止攻击者使用大量独立 IP 或伪造 XFF 标头导致限速记录字典无界增长，在超过上限 `MaxTrackedAuthFailureIps` 时按最后失败时间自动裁剪，保留最近活跃记录。
+- **登录轮询跟随重定向逐跳可信主机校验**：`GetWebSourceWithSetCookiesAsync` 切换为禁自动跳转客户端手动逐跳，每跳发起前校验 `IsTrustedCookieHost`，防止重定向将用户凭证及下发的 `Set-Cookie` 泄露至不可信主机。
 
 ### 测试增强
 
-- 全库测试 640 例（新增 6 例）：VerifiedNoRedirectClient 身份稳定性、GET/POST 307 不跟随（含自动跳转客户端对照）、配置合并 URL 形值选项回归与位置参数提取器语义。
+- 全库测试 659 例（新增 25 例）：VerifiedNoRedirectClient 身份稳定性、GET/POST 307 不跟随、配置合并 URL 形值选项回归、章节前缀清理、认证字典限速有界裁剪、已完成任务溢出按创建时间排序、大会员 JSON message 字段解析、BaseUrlRegex 严格匹配、登录轮询逐跳重定向安全拦截与合法跟随等。
 
 ## [1.6.16] - 2026-08-19
 

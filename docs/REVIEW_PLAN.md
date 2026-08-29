@@ -173,6 +173,22 @@
 | 测试 | ✅ ServeApiHttpTests 适配：RunningServer 直用 `RunAsync`、NonLoopbackListen 改断 `ValidateListenUrl` 同步异常语义；单测 640/640 全绿（PR gate 过滤器）+ LocalIntegration 3/3 |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes 通过；serve 冒烟：`--help` 退出码 0、serve 监听回环、`/get-tasks/running` 200 |
 
+## 第 11 轮：RF-2 迁移后全库续审 + 新发现消纳（2026-08-30）
+
+> 本轮为 RF-2 合入后的续审：核实迁移质量 + 四路并行深查（下载管线 / serve 服务 / Core 解析网络层 / 测试套件），产出 8 个新发现（3 Medium + 5 Low，登记 REVIEW_FINDINGS RF-8..RF-13）并**全部修复**（含回归测试）。
+
+| 项 | 处理 |
+|----|------|
+| RF-2 迁移后核实 | ✅ 8 命令 AsyncCommand 语义逐字保留、serve `ValidateListenUrl`+`RunAsync` 拆分合理、无残留 async-over-sync 阻塞（仅 ExternalToolHelper 短进程探针例外，文档已说明）；基线 build 0 警告 0 错误、单测 640/640、format 通过 |
+| serve 冒烟 | ✅ 回环启动 `/get-tasks/running`+`/finished` 200；非回环无 token 拒绝启动且退出码 1（遗留 serve 进程 31152 锁 DLL，已确认来源并终止） |
+| RF-8 | ✅ Download.cs FLV 跳过路径清理与 DASH 分支对齐（封面/字幕/章节），fastSkipChecked 路径补章节清理；新增 `DeleteResidualChapterFiles` 按前缀兜底清理（muxer 写 `chapters-{basename}` 唯一名，旧清理只删固定名 `chapters` 是预存不一致）；+2 测试 |
+| RF-9 | ✅ BBDownApiServer 认证失败限速字典超过 `MaxTrackedAuthFailureIps` 时按最后失败时间裁剪（仅删过期条目约束不住新 IP 轰炸）；+1 测试（反射验证字典有界） |
+| RF-10 | ✅ `TrimFinishedTasksLocked` 溢出裁剪按 `TaskCreateTime` 保留最新（旧 `RemoveRange(0,...)` 按完成顺序误删"后创建先完成"任务）；+1 测试 |
+| RF-11 | ✅ Parser 大会员回退 host 改用 `Config.Current.EpHost`（镜像站可用）；回退判定改解析 JSON `message` 字段（子串匹配仅作非 JSON 兜底，防 B 站改文案失效）；+2 测试 |
+| RF-12 | ✅ `BaseUrlRegex` 收紧为 `^https?://[^/:]+:\d+`（query 中 `:数字` 不再误判为端口）；+1 测试 |
+| RF-13 | ✅ `GetWebSourceWithSetCookiesAsync`（登录轮询）改 `NoRedirectClient` 手动逐跳 + 每跳 `IsTrustedCookieHost` 校验（与 gRPC/Widevine 收口同构，凭据与响应 Set-Cookie 不外发非可信主机），上限 `MaxRedirectHops=10`；+2 测试 |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 659/659 全绿（PR gate 过滤器，新增 19 例）；dotnet format --verify-no-changes 通过 |
+
 ---
 
 ## 已完成批次（git log 13766b0..2ab54d1，2026-08）

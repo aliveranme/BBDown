@@ -125,6 +125,43 @@ public class DownloadPipelineTests
         => Assert.Equal(expected, Program.ClampRoleAudioIndex(aIndex, count));
 
     [Fact]
+    public void DeleteResidualChapterFiles_RemovesChapterPrefixedFiles()
+    {
+        // RF-11-D1：跳过/失败路径必须按前缀清理章节 meta 文件——muxer 写唯一名
+        // chapters-{basename}（防并发混流互相覆盖），旧清理路径只删固定名 "chapters"，
+        // 导致重跑已下载视频时残留 chapters-* 文件。本方法应按前缀匹配两者都清掉，
+        // 且不能误删同名前缀之外的正常文件。
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-chapters-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var fixedName = Path.Combine(dir, "chapters");
+            var uniqueName = Path.Combine(dir, "chapters-abc");
+            var otherName = Path.Combine(dir, "subtitle.zh.srt");
+            File.WriteAllText(fixedName, "x");
+            File.WriteAllText(uniqueName, "x");
+            File.WriteAllText(otherName, "x");
+
+            Program.DeleteResidualChapterFiles(dir);
+
+            Assert.False(File.Exists(fixedName), "固定名 chapters 应被清理");
+            Assert.False(File.Exists(uniqueName), "muxer 唯一名 chapters-* 应被清理");
+            Assert.True(File.Exists(otherName), "非 chapters 前缀文件不得误删");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void DeleteResidualChapterFiles_MissingOrEmptyDir_DoesNotThrow()
+    {
+        // 目录不存在 / 无匹配文件时静默返回：跳过路径兜底清理不能因 IO 异常掩盖主流程结果
+        Program.DeleteResidualChapterFiles(Path.Combine(Path.GetTempPath(), "bbdown-no-such-" + Guid.NewGuid().ToString("N")));
+    }
+
+    [Fact]
     public async Task MultiThreadDownloadAndMerge_MergesAndCleansClips_UnderLock()
     {
         // 用本地 HTTP 服务提供一段小文件，验证多线程下载在锁内完成"下载→合并→清理"：
