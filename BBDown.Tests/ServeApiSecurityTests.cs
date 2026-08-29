@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 
 namespace BBDown.Tests;
 
@@ -139,6 +140,69 @@ public class ServeApiSecurityTests
         Assert.True(server.IsAuthLockedOut("10.0.0.1"), "锁死后持续拒绝");
         // 其它来源 IP 不受影响（同机合法客户端/攻击者换 IP 各自独立计数）
         Assert.False(server.IsAuthLockedOut("10.0.0.2"));
+    }
+
+    [Fact]
+    public void IsAuthLockedOut_DictionaryStaysBounded_UnderIpHammering()
+    {
+        // 攻击者持续换新 IP/XFF 轰炸时，每条失败都会登记新键；这些键是"最近失败"
+        // 永不过期，仅删过期条目约束不住字典大小。必须按最后失败时间裁剪，字典有界。
+        var server = new BBDownApiServer();
+        var maxTracked = (int)typeof(BBDownApiServer)
+            .GetField("MaxTrackedAuthFailureIps", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+
+        // 模拟远超上限的独立来源（1.2 倍于上限），每个来源只失败一次（不触发锁死）
+        for (int i = 0; i < maxTracked * 12 / 10; i++)
+        {
+            server.IsAuthLockedOut($"10.0.{i / 250}.{i % 250}");
+        }
+
+        var dict = (Dictionary<string, List<DateTime>>)typeof(BBDownApiServer)
+            .GetField("_authFailures", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(server)!;
+        // 允许 +1 的窗口抖动（裁剪发生在下次登记前），但绝不能随 IP 数线性增长
+        Assert.InRange(dict.Count, 1, maxTracked + 1);
+    }
+
+    [Fact]
+    public void TrimFinishedTasksLocked_KeepsNewestByCreateTime_NotByCompletionOrder()
+    {
+        // 列表按"完成顺序"追加，与"创建顺序"无关。旧实现按完成顺序 RemoveRange 头部
+        // 会误删"后创建但先完成"的任务；必须按 TaskCreateTime 保留最新的上限条。
+        var server = new BBDownApiServer();
+        var maxFinished = (int)typeof(BBDownApiServer)
+            .GetField("MaxFinishedTasks", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetValue(null)!;
+
+        var finished = (List<DownloadTask>)typeof(BBDownApiServer)
+            .GetField("finishedTasks", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(server)!;
+
+        long now = DateTimeOffset.Now.ToUnixTimeSeconds();
+        // 构造 上限+5 条：前 5 条"后创建但先完成"（TaskCreateTime 最新、排在列表头），
+        // 其余 上限 条创建时间更旧。旧实现 RemoveRange(0,5) 会删掉头 5 条（最新的，错误）。
+        for (int i = 0; i < 5; i++)
+            finished.Add(new DownloadTask($"new-{i}", "u", now - i));
+        for (int i = 0; i < maxFinished; i++)
+            finished.Add(new DownloadTask($"old-{i}", "u", now - maxFinished - i));
+
+        var method = typeof(BBDownApiServer)
+            .GetMethod("TrimFinishedTasksLocked", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var taskLock = typeof(BBDownApiServer)
+            .GetField("_taskLock", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(server)!;
+        lock (taskLock)
+        {
+            method.Invoke(server, null);
+        }
+
+        Assert.Equal(maxFinished, finished.Count);
+        Assert.Contains(finished, t => t.Aid == "new-0");   // 最新创建的被保留
+        Assert.Contains(finished, t => t.Aid == "new-4");
+        Assert.DoesNotContain(finished, t => t.Aid == $"old-{maxFinished - 5}"); // 最旧创建的被裁剪
+        Assert.DoesNotContain(finished, t => t.Aid == $"old-{maxFinished - 1}");
+        Assert.Contains(finished, t => t.Aid == "old-0"); // 较新的 old 条目保留（不是删列表头）
     }
 
     [Fact]
