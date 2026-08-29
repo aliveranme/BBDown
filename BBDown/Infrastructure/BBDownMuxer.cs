@@ -2,6 +2,7 @@ using System;
 using BBDown.Core.Util;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using static BBDown.Core.Entity.Entity;
@@ -143,7 +144,9 @@ static partial class BBDownMuxer
             // 元数据全部拼进单个 "-itags tool=..." 参数（mp4box 的 itags 语法要求）
             var metaArg = new StringBuilder("tool=");
             if (!string.IsNullOrEmpty(pic))
-                metaArg.Append($":cover=\"{pic}\"");
+                // cover 值与其他 itags 值同规则走 EscapeString：Windows 路径天然含 \，
+                // 不转义会被 mp4box 当转义序列消费，杜比视界自动切 mp4box 时封面静默丢失
+                metaArg.Append($":cover=\"{EscapeString(pic)}\"");
             if (!string.IsNullOrEmpty(episodeId))
                 metaArg.Append($":album=\"{title}\":title=\"{episodeId}\"");
             else
@@ -372,7 +375,10 @@ static partial class BBDownMuxer
             if (pubTime != 0)
             {
                 args.Add("-metadata");
-                args.Add($"creation_time={DateTimeOffset.FromUnixTimeSeconds(pubTime):yyyy-MM-ddTHH:mm:ss.ffffffZ}");
+                // RFC 3339 时间戳喂给机器可读协议：自定义格式的 ":" 是 culture 时间分隔符
+                // 占位符，fi-FI 等区域设置下会产出 "19.30.00" 之类非 ISO-8601 串，
+                // ffmpeg av_parse_time 解析失败后发布时间元数据静默丢失。
+                args.Add($"creation_time={DateTimeOffset.FromUnixTimeSeconds(pubTime).ToString("yyyy-MM-ddTHH:mm:ss.ffffffZ", CultureInfo.InvariantCulture)}");
             }
         }
         args.Add("-c:v");
