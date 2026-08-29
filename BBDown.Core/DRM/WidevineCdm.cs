@@ -220,9 +220,18 @@ public sealed class WidevineCdm : IDisposable
                 req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
                 req.Headers.TryAddWithoutValidation("Accept", "*/*");
 
-                // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
-                // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
-                using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req, token);
+                // 许可证响应携带内容解密密钥、请求体是设备私钥签名的 challenge：
+                // 强制走始终校验证书的客户端（VerifiedNoRedirectClient），不受用户 --insecure
+                // 影响——跳过 TLS 校验会让中间人直接窃取内容密钥；同时禁自动跟随重定向
+                // （RF-4）：AllowAutoRedirect=true 会在 307/308 上连同 body 重放到跨主机目标，
+                // 签名载荷随跳转外发。3xx 在此显式拦下报错，不跟随、不外发（与 gRPC POST 同构）。
+                using var resp = await HTTPUtil.VerifiedNoRedirectClient.SendAsync(req, token);
+                // 3xx：许可证端点不应重定向，显式拦截（不允许 challenge/body 随 307/308 重放）。
+                // 状态码 <500 不满足重试谓词，按确定性失败立即抛出。
+                if ((int)resp.StatusCode is >= 300 and < 400)
+                    throw new HttpRequestException(
+                        $"许可证端点返回意外重定向 (HTTP {(int)resp.StatusCode})，已拒绝跟随以避免签名请求体外发",
+                        null, resp.StatusCode);
                 if (!resp.IsSuccessStatusCode)
                 {
                     // 5xx 瞬时故障参与有界重试；4xx 确定性失败立即抛（带状态码供上层定位）
