@@ -150,6 +150,19 @@
 | 批次一护栏代码审查 | ✅ FakeBilibiliApiServer（锁/Dispose/404 快速失败）、ParserFixtureTests（G8 卫生约定、15 用例断言真实消费节点）、Parser.cs `WithApiScheme` 开缝（默认配置行为逐字节不变）均无缺陷 |
 | 新一轮深查 | SubUtil / DanmakuUtil / BBDownMuxer / ExternalProcessRunner / BBDownConfigParser / Program.cs：无 High/Medium；实证排除两个疑点（SubUtil:278 三字符 `\\/` 替换正确匹配 intl 双重转义；JSON 序列化 6 个 source-gen 上下文全覆盖无 AOT 缺口）；产出 3 个 Low（RF-5 culture 时间格式、RF-6 mp4box cover 转义一致性、RF-7 cliHasUrl 误报） |
 
+## 第 9 轮：消纳挂起发现 RF-4/RF-5/RF-6/RF-7（2026-08-29）
+
+> 将 REVIEW_FINDINGS.md 中四个 ⏳ 待议的 Low 级发现一次性落地（分支 `fix/review-r9-pending-findings`）。剩余挂起仅 RF-2（AsyncCommand 批量迁移，技术债待排期）；RF-3 经评估维持现状。
+
+| 项 | 处理 |
+|----|------|
+| RF-5 | ✅ `BBDownMuxer` ffmpeg `creation_time` 格式化追加 `CultureInfo.InvariantCulture`（自定义格式的 `:` 是 culture 时间分隔符占位符，fi-FI 等区域设置下产出非 ISO-8601 串，`av_parse_time` 解析失败后发布时间元数据静默丢失） |
+| RF-6 | ✅ `MuxByMp4box` itags `cover` 值补 `EscapeString(pic)`（Windows 路径天然含 `\`，与同函数其它 itags 值的转义规则对齐，杜比视界自动切 mp4box 时封面不再静默丢失） |
+| RF-4 | ✅ 新增 `HTTPUtil.VerifiedNoRedirectClient`（始终校验证书 + `AllowAutoRedirect=false`，独立池不受 `--insecure` 降级）；`WidevineCdm` 许可证 POST 切换并在 3xx 显式拦截（与 gRPC POST B3-F2 收口同构，签名 challenge 不随 307/308 重放外发） |
+| RF-7 | ✅ `BBDownConfigParser` 新增 `GetPositionalTokens`（与 `IsSubCommandInvocation` 同构跳值），`cliHasUrl` 只对位置参数应用 URL 启发式——`--aria2c-proxy http://...`、`--work-dir av123` 等 URL 形值选项不再压制配置文件里的 URL |
+| 测试 | ✅ 新增 6 例（总计 640）：VerifiedNoRedirectClient 身份稳定/GET 307 不跟随（含自动跳转对照）/POST+body 307 不重放；ConfigMerge 两个 URL 形值选项回归 + 位置参数提取器语义 |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 640/640 全绿（PR gate 过滤器）；dotnet format --verify-no-changes 通过 |
+
 ---
 
 ## 已完成批次（git log 13766b0..2ab54d1，2026-08）

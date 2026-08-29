@@ -11,10 +11,10 @@
 | RF-1 | 分片扩展名判定一致性（`IsVideoClipPath`） | Low | 采纳（1 行修复） | ✅ 已修复（本轮） |
 | RF-2 | CLI 命令层 Async-over-Sync 迁移 `AsyncCommand` | Medium（对应 REVIEW_PLAN I8） | 技术债，一次性批量重构 | ⏳ 待排期 |
 | RF-3 | serve 已完成任务历史"无界堆积" | —（建议前提不成立） | 不实施（现有防护已覆盖） | ⭕ 维持现状 |
-| RF-4 | Widevine 许可证请求跟随重定向 | Low（一致性） | 改进提议 | ⏳ 待议 |
-| RF-5 | ffmpeg `creation_time` 元数据格式文化敏感 | Low | 一行修复（InvariantCulture） | ⏳ 待议 |
-| RF-6 | mp4box `-itags` cover 值未走 EscapeString | Low（一致性） | 一行修复（补 EscapeString） | ⏳ 待议 |
-| RF-7 | 配置合并 cliHasUrl 把选项值误判为 URL | Low | 启发式收紧（仅扫描位置参数） | ⏳ 待议 |
+| RF-4 | Widevine 许可证请求跟随重定向 | Low（一致性） | 改进提议 | ✅ 已修复（第 9 轮） |
+| RF-5 | ffmpeg `creation_time` 元数据格式文化敏感 | Low | 一行修复（InvariantCulture） | ✅ 已修复（第 9 轮） |
+| RF-6 | mp4box `-itags` cover 值未走 EscapeString | Low（一致性） | 一行修复（补 EscapeString） | ✅ 已修复（第 9 轮） |
+| RF-7 | 配置合并 cliHasUrl 把选项值误判为 URL | Low | 启发式收紧（仅扫描位置参数） | ✅ 已修复（第 9 轮） |
 
 ---
 
@@ -62,7 +62,7 @@
 - **发现**：携带设备签名 `challenge` 的许可证 POST 会随 3xx 重放 body；与本轮 B3-F2"凭据载荷禁跟随重定向"原则（gRPC POST 已改用 `NoRedirectClient` 显式拦 3xx）不一致。
 - **定性**：预存问题（非本批引入）；实际可利用性极低 —— 恒校验 TLS 排除 MITM、`LicenseUrl` 为硬编码可信端点、服务器若被攻破可直接伪造响应无需重定向（无增量攻击面）。
 - **结论**：为原则一致性建议改为禁重定向客户端并显式处理 3xx（与 gRPC POST 同构收口）。副作用极小，可随任意后续安全批次一并落地。
-- **状态**：⏳ 待议（Low，一致性改进，不影响当前发版）。
+- **状态**：✅ 已修复（2026-08-29，第 9 轮）：新增 `HTTPUtil.VerifiedNoRedirectClient`（始终校验证书 + `AllowAutoRedirect=false`，独立池不受 `--insecure` 降级），`WidevineCdm.SendRequestAsync` 切换并在 3xx 显式拦截报错（状态码 <500 不满足重试谓词，按确定性失败立即抛出）。新增 `VerifiedNoRedirectClientTests` 3 例：身份稳定性（不随 SkipSslCheck 路由）、GET 307 不跟随（对照自动跳转客户端跟随）、POST+body 307 不重放。
 
 ---
 
@@ -73,7 +73,7 @@
 - **定性**：预存问题（上游继承）；影响面窄（仅 `--sub-only` 之外的正常混流且区域设置特殊的用户），仅元数据丢失不损坏流。
 - **核实排他性**：全库扫描其余 `yyyy-MM-dd HH:mm` 用法均为日志/控制台展示或文件名场景，文化敏感可接受（或无分隔符安全）；仅此一处喂给机器可读协议。
 - **结论**：一行修复——格式化追加 `CultureInfo.InvariantCulture`（与 277b138 批次的"文化不变解析"原则同构收口）。
-- **状态**：⏳ 待议（Low，可随任意后续低风险批次一并落地）。
+- **状态**：✅ 已修复（2026-08-29，第 9 轮）：`DateTimeOffset.FromUnixTimeSeconds(pubTime).ToString("yyyy-MM-ddTHH:mm:ss.ffffffZ", CultureInfo.InvariantCulture)`，全库唯一喂给机器可读协议的时间戳收口。
 
 ---
 
@@ -83,7 +83,7 @@
 - **发现**：`MuxByMp4box` 顶部对 desc/title/episodeId/author/lang 统一 `EscapeString`（依据其注释：mp4box itags 值内 `"` 与 `\` 必须转义），但同为 itags 值的 `pic`（封面图本地路径）未转义。Windows 路径天然含 `\`（如 `C:\Users\...\cover.jpg`），按代码自述规则会被 mp4box 当转义序列消费，杜比视界自动切 mp4box 的场景下封面可能静默丢失。
 - **定性**：预存问题（上游继承）；mp4box 对裸 `\` 的实际容忍度未实测（GPAC 解析器可能宽松），故定 Low/一致性而非确认缺陷。
 - **结论**：为与同函数其它 itags 值的转义规则保持一致，补 `EscapeString(pic)` 即可（`EscapeString` 对正常路径无副作用——仅翻倍 `\` 与 `"`）。
-- **状态**：⏳ 待议（Low，一致性收口）。
+- **状态**：✅ 已修复（2026-08-29，第 9 轮）：`metaArg.Append($":cover=\"{EscapeString(pic)}\"")`，与同函数顶部 desc/title/episodeId/author/lang 的转义规则一致。
 
 ---
 
@@ -93,7 +93,7 @@
 - **发现**：判定"命令行是否已显式给出 URL"时扫描**全部** argv（含选项的值）。误报场景：URL 写在 `BBDown.config` 中、命令行携带值形似 URL 的选项（如 `--aria2c-proxy http://127.0.0.1:7890`、`--work-dir av123`）→ `cliHasUrl` 误判为 true → 配置文件里的 URL 位置参数被丢弃 → Spectre 报缺少必填参数，用户难以定位。
 - **定性**：预存启发式的精度问题；触发需要"URL 在配置文件 + 命令行恰好有 URL 形值选项"的组合，真实概率低。
 - **结论**：收紧方向——只对"首个非选项 token"（Spectre 位置参数的位置）应用 UrlLikeToken，或先按 aliasMap 跳过带值选项再扫描（`IsSubCommandInvocation` 已有同构跳过逻辑可复用）。改动属行为微调，建议带回归用例（CLI 传 `--aria2c-proxy http://...` + 配置含 URL）单独落地。
-- **状态**：⏳ 待议（Low，启发式收紧，需配测试）。
+- **状态**：✅ 已修复（2026-08-29，第 9 轮）：新增 `GetPositionalTokens`（与 `IsSubCommandInvocation` 同构：带值选项吞下一 token、bool 开关与 `--opt=value` 不吞），`cliHasUrl` 只对位置参数应用 UrlLikeToken。`ConfigMergeTests` 新增 3 例回归：`--aria2c-proxy` URL 形值/`--work-dir` av123 形值不再压制配置文件 URL（配置 URL 与选项值均正确合并）、位置参数提取器跳值语义。
 
 ---
 
