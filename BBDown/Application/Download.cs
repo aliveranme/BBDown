@@ -214,6 +214,9 @@ internal partial class Program
             if (!string.IsNullOrEmpty(audioPath) && File.Exists(audioPath)) try { File.Delete(audioPath); } catch { }
             foreach (var s in subtitleInfo) if (File.Exists(s.path)) try { File.Delete(s.path); } catch { }
             foreach (var a in audioMaterial) if (File.Exists(a.path)) try { File.Delete(a.path); } catch { }
+            // 章节 meta 文件同样可能由本次或上次任务残留（见 DeleteResidualChapterFiles），
+            // 跳过路径一并兜底清理，避免重跑已下载视频时 aid 目录残留章节文件。
+            DeleteResidualChapterFiles(PathUtil.ResolveWorkPath(p.aid));
             var aidDir = PathUtil.ResolveWorkPath(p.aid);
             if (Directory.Exists(aidDir) && !Directory.EnumerateFileSystemEntries(aidDir).Any())
             {
@@ -297,8 +300,7 @@ internal partial class Program
             var dir = Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath);
             if (dir is not null)
             {
-                try { if (File.Exists(Path.Combine(dir, "chapters"))) File.Delete(Path.Combine(dir, "chapters")); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                DeleteResidualChapterFiles(dir);
             }
         }
         foreach (var s in subtitleInfo)
@@ -322,6 +324,26 @@ internal partial class Program
             try { if (Directory.GetFiles(aidDir).Length == 0) Directory.Delete(aidDir, true); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>
+    /// 删除目录下残留的章节 meta 文件。muxer 按输出文件名派生唯一名
+    /// （chapters-{basename}，见 BBDownMuxer，防并发混流互相覆盖），早期版本与
+    /// 部分清理路径用固定名 "chapters"；这里按前缀匹配两者，跳过/失败路径兜底清理。
+    /// 单文件清理失败不影响整体（磁盘占用/句柄异常不该掩盖主流程结果）。
+    /// internal 供测试直接验证前缀匹配清理行为。
+    /// </summary>
+    internal static void DeleteResidualChapterFiles(string dir)
+    {
+        try
+        {
+            foreach (var f in Directory.GetFiles(dir, "chapters*"))
+            {
+                try { File.Delete(f); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     private static async Task<bool> DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
@@ -694,8 +716,7 @@ internal partial class Program
                                 try { if (File.Exists(s.path)) File.Delete(s.path); }
                                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
-                            try { if (File.Exists(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters"))) File.Delete(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters")); }
-                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                            DeleteResidualChapterFiles(PathUtil.ResolveWorkPath(p.aid));
                             if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                             {
                                 Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
@@ -948,6 +969,18 @@ internal partial class Program
                         {
                             Logger.Log($"{savePath}已存在, 跳过下载...");
                             relatedTask?.AddSavePath(savePath);
+                            // 清理本次已下载但未被消费的装饰性文件（封面/字幕/章节）：与 dash
+                            // 分支的跳过清理行为保持一致。封面下载于轨道提取前，若不清理，
+                            // 每次重跑已下载的视频都会残留封面/字幕/章节文件，且 Directory
+                            // 非空时 aid 目录也删不掉。
+                            try { if (File.Exists(coverPath)) File.Delete(coverPath); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                            foreach (var s in subtitleInfo)
+                            {
+                                try { if (File.Exists(s.path)) File.Delete(s.path); }
+                                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                            }
+                            DeleteResidualChapterFiles(PathUtil.ResolveWorkPath(p.aid));
                             // 只清理空目录：目录里的可续传分片可能属于其它分P的上次中断下载
                             // （aid 工作目录按稿件共享），不能因本P跳过而连带删除。
                             if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
