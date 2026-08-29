@@ -9,7 +9,7 @@
 | 编号 | 主题 | 评估级别 | 判定 | 状态 |
 |------|------|---------|------|------|
 | RF-1 | 分片扩展名判定一致性（`IsVideoClipPath`） | Low | 采纳（1 行修复） | ✅ 已修复（本轮） |
-| RF-2 | CLI 命令层 Async-over-Sync 迁移 `AsyncCommand` | Medium（对应 REVIEW_PLAN I8） | 技术债，一次性批量重构 | ⏳ 待排期 |
+| RF-2 | CLI 命令层 Async-over-Sync 迁移 `AsyncCommand` | Medium（对应 REVIEW_PLAN I8） | 技术债，一次性批量重构 | ✅ 已修复（第 10 轮） |
 | RF-3 | serve 已完成任务历史"无界堆积" | —（建议前提不成立） | 不实施（现有防护已覆盖） | ⭕ 维持现状 |
 | RF-4 | Widevine 许可证请求跟随重定向 | Low（一致性） | 改进提议 | ✅ 已修复（第 9 轮） |
 | RF-5 | ffmpeg `creation_time` 元数据格式文化敏感 | Low | 一行修复（InvariantCulture） | ✅ 已修复（第 9 轮） |
@@ -38,7 +38,12 @@
   - **死锁面不存在**：BBDown 为纯控制台进程，无 `SynchronizationContext`，`GetResult()` 无死锁条件。
   - **饥饿面极低**：CLI 单次执行，每命令生命周期仅额外占用 1 个线程池线程；唯一长驻点是 serve 的 `StartServer`（serve 全程占 1 线程），线程池可伸缩无实际危害；serve 的并发请求处理本身为 async，不经过此路径。
 - **结论**：方向正确（Spectre 官方推荐写法、占用更少线程），但定性应降为"高质量重构"而非隐患；建议作为**一次性批量重构**（8 命令 + 注册 + 保持 ExitCode 语义），不零散进行；不列入当前发版。
-- **状态**：⏳ 待排期（技术债，REVIEW_PLAN I8）。
+- **状态**：✅ 已修复（2026-08-29，第 10 轮，一次性批量落地）：
+  - 迁移 **7** 个命令至 `AsyncCommand<TSettings>`（Login/LoginTV/Article/Live/SubCheck/WatchLater/Serve）。原清单列 8 处，核实 `DefaultCommand` 已是 `AsyncCommand`（清单漂移修正，实际迁移面 7 处）。
+  - serve 链路：`BBDownApiServer.Run` 拆为同步前置校验 `ValidateListenUrl`（测试可用 `Assert.Throws` 同步断言、ServeCommand 快速失败路径保留同步异常语义）+ 真异步 `RunAsync`（`await app.RunAsync`，不再 `Task.Run` + `GetResult()` 让一个线程池线程阻塞整个服务生命周期）；`Program.StartServer` → `StartServerAsync`。关停段的 30s `Task.WaitAll` 有界同步等待**保留**：仅发生在进程退出路径，与生命周期阻塞不同，且避免 `WhenAll`+`WaitAsync` 改变超时/异常类型语义（代码注释说明）。
+  - 各命令原有 catch/退出码语义**逐字保留**（cancel→0、超时→1、批量失败计数→1）。原建议中的 `ExitCodeFor` 评估后**不抽取**：四个命令的取消/超时/部分失败分支消息与过滤条件各不相同，强行共享 helper 会掩盖差异。
+  - 计划外残留：`ExternalToolHelper` 一处 `GetAwaiter().GetResult()` 为短进程探针的 stdout/stderr 同步读取，非命令生命周期阻塞，维持现状。
+  - 测试适配：`ServeApiHttpTests.RunningServer` 直用 `RunAsync`（去 `Task.Run` 包装）；`NonLoopbackListen_WithoutToken_Throws` 改断言 `ValidateListenUrl` 同步异常语义（真实回环启动路径由各 RunningServer 用例继续覆盖）。
 
 ---
 

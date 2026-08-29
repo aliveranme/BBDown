@@ -58,7 +58,8 @@ public class ServeApiHttpTests
             _taskFile = taskFilePath ?? Path.Combine(Path.GetTempPath(), $"bbdown-tasks-{Guid.NewGuid():N}.json");
             Server = new BBDownApiServer(maxConcurrent: maxConcurrent, serveToken: withToken ? "test-token" : null, taskFilePath: _taskFile);
             Server.SetupServer();
-            _runTask = Task.Run(() => Server.Run(BaseUrl, _cts.Token));
+            // RunAsync 迁移（RF-2）后本身就是异步任务，无需再 Task.Run 包一层
+            _runTask = Server.RunAsync(BaseUrl, _cts.Token);
             // 等待服务器就绪（Kestrel 开始监听）后再发请求：WebApplication 启动在
             // CI 首次运行/慢环境下明显慢于本地，若不等待，所有请求都会撞上
             // Connection refused（{BaseUrl}）竞态。
@@ -363,26 +364,15 @@ public class ServeApiHttpTests
     {
         // 默认安全边界：非回环监听（0.0.0.0/具体网卡 IP）会把端点暴露到局域网/公网，
         // 未配置 --serve-token 时必须拒绝启动——删掉这条防线测试仍全绿。
+        // RunAsync 是 async 方法，校验异常进入返回的 Task；同步前置校验独立在
+        // ValidateListenUrl（RunAsync 启动前也调用它兜底），这里直接断言校验语义。
         var server = new BBDownApiServer();
         server.SetupServer();
-        Assert.Throws<InvalidOperationException>(() => server.Run("http://0.0.0.0:12345"));
-        Assert.Throws<InvalidOperationException>(() => server.Run("http://192.168.1.10:12345"));
-        // 回环监听不带 token 是受信任本地边界，保持兼容（不抛）——但 Run 会阻塞，
-        // 这里用回环地址 + 预取消 token 验证启动路径可进入（不抛非法配置异常）
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-        try
-        {
-            server.Run("http://127.0.0.1:58699", cts.Token);
-        }
-        catch (InvalidOperationException)
-        {
-            Assert.Fail("回环监听不带 token 不应被拒");
-        }
-        catch (OperationCanceledException)
-        {
-            // 预取消：RunAsync 立即退出，符合预期
-        }
+        Assert.Throws<InvalidOperationException>(() => server.ValidateListenUrl("http://0.0.0.0:12345"));
+        Assert.Throws<InvalidOperationException>(() => server.ValidateListenUrl("http://192.168.1.10:12345"));
+        // 回环监听不带 token 是受信任本地边界，保持兼容（不抛）。
+        // 实际启动路径由上方各 RunningServer 用例覆盖（真实 Kestrel 回环监听）。
+        server.ValidateListenUrl($"http://127.0.0.1:{TestPort.Allocate()}");
     }
 
     [Fact]

@@ -363,7 +363,13 @@ public partial class BBDownApiServer
         });
     }
 
-    public void Run(string url, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 监听地址前置校验（同步）：URL 合法性与"非回环必须带 token"安全边界。
+    /// 独立成同步方法：RunAsync 是 async 方法，校验异常会进入返回的 Task 而非
+    /// 同步抛出，测试无法用 Assert.Throws 语义直接断言；ServeCommand 的同步
+    /// 预检失败路径也依赖同步异常。RunAsync 启动前仍调用本方法兜底。
+    /// </summary>
+    public void ValidateListenUrl(string url)
     {
         if (app is null) return;
         bool result = Uri.TryCreate(url, UriKind.Absolute, out Uri? uriResult)
@@ -385,10 +391,18 @@ public partial class BBDownApiServer
             throw new InvalidOperationException(
                 $"监听地址 {url} 不是回环地址（0.0.0.0 / :: / 具体网卡 IP 等），必须配置 --serve-token 才能启动，否则任意客户端都能提交任务并访问本机文件。");
         }
+    }
+
+    public async Task RunAsync(string url, CancellationToken cancellationToken = default)
+    {
+        ValidateListenUrl(url);
+        if (app is null) return;
         app.Urls.Add(url);
         try
         {
-            Task.Run(() => app.RunAsync(cancellationToken)).GetAwaiter().GetResult();
+            // RF-2：命令层已迁移 AsyncCommand，serve 全程 await——不再用
+            // Task.Run + GetAwaiter().GetResult() 让一个线程池线程阻塞整个服务生命周期。
+            await app.RunAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -399,6 +413,9 @@ public partial class BBDownApiServer
         // "取消 → 终止外部进程 → 持久化"，避免退出进程时遗留孤儿 ffmpeg/aria2c
         // 或丢失未落盘的任务记录。等待超时（例如下载器在取消后仍卡在外部进程上）
         // 则放弃等待，不无限阻塞退出。
+        // Task.WaitAll 是有界同步等待且仅发生在进程退出路径（≤30s），与 RF-2 消除的
+        // "整个服务生命周期占线程阻塞"不同，保留同步形式以避免 WhenAll+WaitAsync
+        // 的异常类型变化（TimeoutException/首个业务异常）改变退出语义。
         Task[] inflight;
         lock (_inFlightLock) { inflight = [.. _inFlightTasks]; }
         if (inflight.Length > 0)

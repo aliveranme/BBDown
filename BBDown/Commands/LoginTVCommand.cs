@@ -5,14 +5,13 @@ using System.Threading;
 namespace BBDown.Commands;
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
-public class LoginTVCommand : Command<LoginSettings>
+public class LoginTVCommand : AsyncCommand<LoginSettings>
 {
-    protected override int Execute(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
     {
         try
         {
-            // Task.Run avoids deadlock if called from a thread with a SynchronizationContext
-            return Task.Run(() => BBDownLoginUtil.LoginTV(cancellationToken)).GetAwaiter().GetResult() ? 0 : 1;
+            return await BBDownLoginUtil.LoginTV(cancellationToken) ? 0 : 1;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

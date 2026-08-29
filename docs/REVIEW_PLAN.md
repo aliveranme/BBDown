@@ -163,6 +163,16 @@
 | 测试 | ✅ 新增 6 例（总计 640）：VerifiedNoRedirectClient 身份稳定/GET 307 不跟随（含自动跳转对照）/POST+body 307 不重放；ConfigMerge 两个 URL 形值选项回归 + 位置参数提取器语义 |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 640/640 全绿（PR gate 过滤器）；dotnet format --verify-no-changes 通过 |
 
+## 第 10 轮：RF-2 一次性批量重构（AsyncCommand 迁移，2026-08-29）
+
+> 消纳 REVIEW_FINDINGS 最后一个 ⏳ 挂起项 RF-2（分支 `refactor/rf2-async-command-migration`）。至此 FINDINGS 全部条目结转完毕（其余为"已修复"或"维持现状"）。
+
+| 项 | 处理 |
+|----|------|
+| RF-2 | ✅ 7 个命令迁移 `AsyncCommand<TSettings>`（Login/LoginTV/Article/Live/SubCheck/WatchLater/Serve；原清单含 DefaultCommand，核实已迁移过，漂移修正）；serve 链路 `Run` → `ValidateListenUrl` + `RunAsync`、`StartServer` → `StartServerAsync`，serve 全程 await 不再占用线程池线程阻塞等待；各命令 catch/退出码语义逐字保留，`ExitCodeFor` 评估后不抽取（各命令取消/超时/部分失败语义不同，见 FINDINGS RF-2） |
+| 测试 | ✅ ServeApiHttpTests 适配：RunningServer 直用 `RunAsync`、NonLoopbackListen 改断 `ValidateListenUrl` 同步异常语义；单测 640/640 全绿（PR gate 过滤器）+ LocalIntegration 3/3 |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes 通过；serve 冒烟：`--help` 退出码 0、serve 监听回环、`/get-tasks/running` 200 |
+
 ---
 
 ## 已完成批次（git log 13766b0..2ab54d1，2026-08）
