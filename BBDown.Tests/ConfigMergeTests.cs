@@ -114,4 +114,43 @@ public class ConfigMergeTests
         Assert.Single(merged, a => a.StartsWith("https://"));
         Assert.Contains("--dfn-priority", merged);
     }
+
+    [Fact]
+    public void UrlLikeOptionValue_DoesNotSuppressConfigUrl()
+    {
+        // RF-7 回归：--aria2c-proxy 的值（http://127.0.0.1:7890）形似 URL。
+        // 旧实现对全部 argv 应用 URL 启发式，"URL 在配置文件 + 命令行有 URL 形值选项"
+        // 被误判成"命令行已给出 URL"，配置文件里的 URL 被丢弃 → Spectre 报缺少必填参数。
+        var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n--dfn-priority\n1080P 高清\n");
+        var merged = BBDownConfigParser.MergeWithConfig(
+            ["--config-file", cfg, "--aria2c-proxy", "http://127.0.0.1:7890"]);
+        File.Delete(cfg);
+
+        Assert.Contains("https://www.bilibili.com/video/BV1AAAAAAAAAA", merged);
+        Assert.Equal("1080P 高清", EffectiveValue(merged, "--dfn-priority"));
+        Assert.Equal("http://127.0.0.1:7890", EffectiveValue(merged, "--aria2c-proxy"));
+    }
+
+    [Fact]
+    public void IdLikeOptionValue_DoesNotSuppressConfigUrl()
+    {
+        // 同 RF-7：--work-dir av123 的值命中 av\d+ 形态，同样不应算作"命令行已给 URL"
+        var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n");
+        var merged = BBDownConfigParser.MergeWithConfig(
+            ["--config-file", cfg, "--work-dir", "av123"]);
+        File.Delete(cfg);
+
+        Assert.Contains("https://www.bilibili.com/video/BV1AAAAAAAAAA", merged);
+        Assert.Equal("av123", EffectiveValue(merged, "--work-dir"));
+    }
+
+    [Fact]
+    public void GetPositionalTokens_SkipsOptionValues()
+    {
+        // 需要值的选项吞掉下一 token；bool 开关与 "--opt=value" 不吞；
+        // 只有真正的位置参数（URL 候选）被收集
+        Assert.Equal(["URL"], BBDownConfigParser.GetPositionalTokens(
+            ["--config-file", "x.config", "--debug", "--aria2c-proxy=http://127.0.0.1:7890", "-p", "2", "URL"]));
+        Assert.Empty(BBDownConfigParser.GetPositionalTokens(["--aria2c-proxy", "http://127.0.0.1:7890"]));
+    }
 }
