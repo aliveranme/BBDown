@@ -10,6 +10,10 @@
 - **杜比视界自动切 mp4box 时封面静默丢失**：`-itags` 的 `cover` 值（本地封面路径）未按 mp4box itags 值转义规则处理，Windows 路径中的 `\` 被当转义序列消费。现与同函数其它 itags 值一致走 `EscapeString`。
 - **配置文件 URL 被 URL 形值的命令行选项误压制**：`BBDown.config` 中写了下载 URL、命令行又恰好携带值形似 URL 的选项（如 `--aria2c-proxy http://127.0.0.1:7890`、`--work-dir av123`）时，配置里的 URL 被误判"命令行已给出"而丢弃，Spectre 报缺少必填参数。现仅对位置参数应用 URL 启发式（选项值不再参与判定）。
 
+### 改进
+
+- **CLI 命令层全量迁移 `AsyncCommand`**：`login`/`logintv`/`article`/`live`/`sub check`/`watchlater`/`serve` 7 个命令不再以 `Task.Run + GetAwaiter().GetResult()` 阻塞线程池线程等待异步操作（serve 长驻进程此前整个生命周期额外占用 1 个阻塞线程）；serve 链路改为真异步（`RunAsync`/`StartServerAsync`），监听地址前置校验独立为 `ValidateListenUrl`。各命令退出码与错误语义不变。
+
 ### 安全性
 
 - **Widevine 许可证请求禁跟随重定向**：许可证 POST 的请求体是设备私钥签名的 challenge，原 `VerifiedAppHttpClient`（允许自动重定向）会在 307/308 上连同 body 重放到跨主机目标。新增 `VerifiedNoRedirectClient`（始终校验证书 + 禁自动重定向，独立连接池不受 `--insecure` 降级），3xx 显式报错不跟随（与 gRPC POST 的凭据收口同构）。
