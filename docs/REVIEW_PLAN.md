@@ -139,6 +139,19 @@
 
 ---
 
+## 第 8 轮：续审（2026-08-29，MAINTENANCE_PLAN 批次验收 + 未深查区域扫查）
+
+> 本轮为维护计划两批次落地后的续审。新发现登记于 REVIEW_FINDINGS.md（RF-5/RF-6/RF-7）。
+
+| 项 | 结果 |
+|----|------|
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 634/634 全绿（PR gate 过滤器） |
+| 批次二文档分支验收 | ✅ `docs/serve-security-options-sync`（e726c4c）对照 9 个改动点逐一核实：README 三处+矛盾表述修正、API.md 两条、wiki 参数表/忽略清单/反代提示全部就位；忽略清单与 `SanitizeUntrustedOptions`（BBDownApiServer.cs:697）17 字段逐一比对一致，文案与 ServeCommand.cs 源码描述一致；无反代的 Docker 示例未误加 `--trusted-proxy`。可提 PR。余项：CHANGELOG 条目随下次发版、合入后手动跑 `scripts/sync-wiki.ps1` |
+| 批次一护栏代码审查 | ✅ FakeBilibiliApiServer（锁/Dispose/404 快速失败）、ParserFixtureTests（G8 卫生约定、15 用例断言真实消费节点）、Parser.cs `WithApiScheme` 开缝（默认配置行为逐字节不变）均无缺陷 |
+| 新一轮深查 | SubUtil / DanmakuUtil / BBDownMuxer / ExternalProcessRunner / BBDownConfigParser / Program.cs：无 High/Medium；实证排除两个疑点（SubUtil:278 三字符 `\\/` 替换正确匹配 intl 双重转义；JSON 序列化 6 个 source-gen 上下文全覆盖无 AOT 缺口）；产出 3 个 Low（RF-5 culture 时间格式、RF-6 mp4box cover 转义一致性、RF-7 cliHasUrl 误报） |
+
+---
+
 ## 已完成批次（git log 13766b0..2ab54d1，2026-08）
 
 1. **13766b0** Core 韧性：字幕 TimeoutException 降级（E1）、Widevine 许可证有界重试+超时分类（B2/E2）、重定向 GET 重试（E3）、fetcher code 诊断（E4/E5）、Logger.LogStack（E6）
