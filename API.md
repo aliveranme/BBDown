@@ -141,14 +141,15 @@
 
 参考[BBDown/Configuration/MyOption.cs](./BBDown/Configuration/MyOption.cs)。属性和命令行参数几乎是一一对应的，相应的值填写使用命令行会使用的值即可。这个结构会随着版本变化，请参考对应版本时候的文件。
 
-> 安全边界：`/add-task` 请求体中的 `host/epHost/tvHost/uposHost` 仅接受 B 站官方域名（其余回落默认值）；`aria2cArgs/aria2cPath/aria2cProxy/ffmpegPath/mp4boxPath/wvdPath/mp4decryptPath/workDir/notifyWebhook/callBackWebHook/userAgent/filePattern/multiFilePattern/insecure` 一律被忽略（`filePattern`/`multiFilePattern` 会作为保存路径模板被拼进输出路径，可能被用于路径穿越；`insecure` 会关闭 TLS 证书校验，可能导致携带凭据的请求被中间人截获；回调字段 `callBackWebHook`/`notifyWebhook` 已改为服务端 allowlist，客户端请求体中的回调地址被忽略）。任务始终保存到默认目录模板。
+> 安全边界：`/add-task` 请求体中的 `host/epHost/tvHost/uposHost` 仅接受 B 站官方域名（其余回落默认值）；`aria2cArgs/aria2cPath/aria2cProxy/ffmpegPath/mp4boxPath/wvdPath/mp4decryptPath/workDir/notifyWebhook/callBackWebHook/userAgent/filePattern/multiFilePattern/insecure/forceHttp/drmKeyHex/drmKidHex` 一律被忽略（`filePattern`/`multiFilePattern` 会作为保存路径模板被拼进输出路径，可能被用于路径穿越；`insecure`/`forceHttp` 会分别关闭 TLS 证书校验、把携带凭据的媒体流量改写为明文 HTTP，可能导致请求被中间人截获；`drmKeyHex`/`drmKidHex` 是客户端可控的解密密钥注入点；回调字段 `callBackWebHook`/`notifyWebhook` 已改为服务端 allowlist，客户端请求体中的回调地址被忽略）。任务始终保存到默认目录模板。
 
 ### 注意事项
 - 由于BBDown的下载进度回报频率所限，`TotalDownloadedBytes`会比实际下载的文件略低，大概会少等效于1秒下载速度的文件体积，如果文件本身就非常小那这个数字偏差会较大。
 - 现在可通过 `POST /cancel/{id}` 取消排队中或运行中的任务（已完成任务不可取消，只能通过 `/remove-finished` 清理）。
 - 服务器默认最多同时执行 3 个下载任务，可通过 serve 的 `--max-concurrent` 调整；超出部分排队等待。
-- 配置了 `--serve-token` 后，`/get-tasks`、`/add-task`、`/cancel`、`/remove-finished` 所有端点都要求请求头 `X-Serve-Token` 匹配，否则返回 401。
+- 配置了 `--serve-token` 后，`/get-tasks`、`/add-task`、`/cancel`、`/remove-finished` 所有端点都要求请求头 `X-Serve-Token` 匹配，否则返回 401。令牌优先使用环境变量 `BBDOWN_SERVE_TOKEN` 注入（避免出现在进程命令行；与 CLI 参数冲突时环境变量胜出并告警）。
 - **非回环监听必须 `--serve-token`**：`-l http://0.0.0.0:<port>` 或 `-l http://<非回环IP>:<port>` 等非回环地址会把任务端点暴露到局域网/公网，未配置 `--serve-token` 时 serve 拒绝启动（提示必须配置 token）。
+- **`--trusted-proxy` 仅在确有可信反向代理时启用**：认证失败限速默认按直连 IP 计键；启用后信任反代追加的 `X-Forwarded-For`，按客户真实 IP 计键。serve 前方无反代时切勿启用，否则客户端可伪造 XFF 头绕过限速。
 - **不再启用任意来源 CORS**：serve 已移除 `AllowAnyOrigin`，响应不返回 `Access-Control-Allow-Origin`，浏览器跨域请求会被同源策略拦截。
 - **写端点带 CSRF/跨源防护（无条件生效）**：`/add-task`、`/cancel`、`/remove-finished` 校验请求头 `Origin` 必须为回环来源（`127.0.0.1`/`localhost`/`[::1]`）或缺失（非浏览器客户端），否则返回 403；`/add-task` 的请求体必须为 `application/json`（`text/plain` 是 CORS 简单请求的合法载体，可直接跨源发出不触发预检），否则返回 415。浏览器管理页面请通过 `http://localhost` 或 `http://127.0.0.1` 托管（`file://` 页面跨源 POST 的 `Origin: null` 会被拒绝）。
 - **任务完成回调由服务端配置**：serve 启动时通过 `--notify-webhook <url>` 指定任务完成回调地址（服务端固定 allowlist）；客户端请求体中的 `callBackWebHook` / `notifyWebhook` 字段被忽略。回调地址会拦截回环/链路本地/云元数据等敏感目标，并在每次回调连接时用已校验的 DNS 解析结果绑定连接（缓解 DNS 重绑定）。

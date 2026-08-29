@@ -18,21 +18,25 @@ BBDown serve
 | :--- | :--- | :--- | :--- |
 | `-l` | `--listen` | `http://127.0.0.1:23333` | 监听的主机与端口 |
 | | `--max-concurrent` | `3` | 最大同时执行下载的任务数量 |
-| | `--serve-token` | *(无)* | API 访问安全鉴权令牌 |
+| | `--serve-token` | *(无)* | API 访问安全鉴权令牌。优先使用环境变量 `BBDOWN_SERVE_TOKEN` 注入（避免令牌出现在进程命令行；两者冲突时环境变量胜出并告警） |
+| | `--trusted-proxy` | *(关闭)* | 信任直连反代追加的 `X-Forwarded-For`（认证失败限速按客户真实 IP 计键）。仅在 serve 前方确有可信反代时启用，否则客户端可伪造 XFF 绕过限速 |
+| | `--notify-webhook` | *(无)* | 任务完成时向该固定地址发送 HTTP POST 回调（服务端配置；`/add-task` 请求体中的回调字段一律被忽略） |
 
 ### 1.3 生产环境启动示例
 ```bash
 BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_token_123"
 ```
 
+> 生产环境建议以 HTTPS 反向代理（nginx/caddy）对外暴露；仅当前方确有可信反代时，再在命令中追加 `--trusted-proxy`（默认关闭），使认证失败限速按 `X-Forwarded-For` 中的客户真实 IP 计键。
+
 ---
 
 ## 2. 安全设计与防护规范
 
 1. **非回环监听强制 Token**：监听地址设为非 `127.0.0.1`（如 `0.0.0.0`）时，**必须显式提供 `--serve-token`**，否则服务将直接拒绝启动退出。
-2. **鉴权请求头**：启用 `--serve-token` 后，所有客户端请求均需携带请求头 `X-Serve-Token: <token>`，否则返回 `401 Unauthorized`。
-3. **入参安全性过滤**：为防止远程代码执行或任意文件读取，API 提交的配置中以下危险字段一律被强制忽略：`FFmpegPath`、`Mp4boxPath`、`Aria2cPath`、`Aria2cArgs`、`WorkDir`、`Insecure`、`Host`、`ConfigFile`。
-4. **反代与加密**：由于内置 HTTP 服务器不包含 HTTPS 传输加密，公网开放时强烈建议配置 Nginx / Caddy 反向代理。
+2. **鉴权请求头**：启用 `--serve-token` 后，所有客户端请求均需携带请求头 `X-Serve-Token: <token>`，否则返回 `401 Unauthorized`。令牌优先经环境变量 `BBDOWN_SERVE_TOKEN` 注入，避免 `ps` 等进程列表暴露。
+3. **入参安全性过滤**：为防止远程代码执行、凭据外泄或路径穿越，API 提交的配置中以下危险字段一律被强制忽略：`aria2cArgs`、`aria2cPath`、`aria2cProxy`、`ffmpegPath`、`mp4boxPath`、`wvdPath`、`mp4decryptPath`、`workDir`、`insecure`、`forceHttp`、`userAgent`、`notifyWebhook`、`filePattern`、`multiFilePattern`、`drmKeyHex`、`drmKidHex`、`callBackWebHook`（任务固定输出到服务端默认目录模板；重试/超时等数值参数还会被钳制到受控范围）。`host/epHost/tvHost/uposHost` 四个 Host 字段仅接受 B 站官方域名白名单，非官方值一律回落官方默认。
+4. **反代与加密**：由于内置 HTTP 服务器不包含 HTTPS 传输加密，公网开放时强烈建议配置 Nginx / Caddy 反向代理。若前方确有可信反代，可加 `--trusted-proxy` 使认证失败限速按 `X-Forwarded-For` 的客户真实 IP 计键；无反代时切勿启用（客户端可伪造 XFF 绕过限速）。
 
 ---
 

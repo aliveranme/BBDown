@@ -154,9 +154,10 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 |--------|--------|------|
 | `-l` | `--listen` | 监听地址（默认 `http://127.0.0.1:23333`，仅本机可访问） |
 | | `--max-concurrent` | 最大并发下载数（默认 3） |
-| | `--serve-token` | 可选认证令牌，配置后所有任务/查询端点要求 `X-Serve-Token` 请求头，否则 401 |
+| | `--serve-token` | 可选认证令牌，配置后所有任务/查询端点要求 `X-Serve-Token` 请求头，否则 401。优先使用环境变量 `BBDOWN_SERVE_TOKEN` 注入（避免令牌出现在进程命令行；两者冲突时环境变量胜出并告警） |
+| | `--trusted-proxy` | 信任直连反代追加的 X-Forwarded-For（认证失败限速按客户真实 IP 计键）。仅在 serve 前方确有可信反代时启用，否则客户端可伪造 XFF 绕过限速 |
 
-> 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
+> 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。多用户环境下建议用环境变量 `BBDOWN_SERVE_TOKEN` 注入令牌，避免 `ps` 等进程列表暴露。`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
 
 ### 常用命令
 
@@ -327,9 +328,9 @@ BBDown serve
 BBDown serve -l http://0.0.0.0:12450 --serve-token <token>
 ```
 
-> 安全提示：CLI 默认仅监听回环地址且无认证，仅建议在可信网络内使用。对外网开放时必须显式 `-l http://0.0.0.0:<port>` 并配合 `--serve-token`（所有 API 请求需携带 `X-Serve-Token` 请求头，否则 401）。**注意：API 服务器仅支持 HTTP，`X-Serve-Token` 在局域/公网链路上是明文传输的，token 只提供访问控制、不提供传输加密**——跨不可信网络使用时请务必前置 HTTPS 反向代理（如 nginx/caddy），并避免把 token 写在进程列表可见的明文命令行（可考虑环境变量注入的启动脚本）。`/add-task` 提交的 `host/epHost/tvHost` 仅接受 B 站官方域名、执行路径/代理/工作目录字段一律忽略、请求体上限 64KB。API 服务器不支持 HTTPS。
+> 安全提示：CLI 默认仅监听回环地址且无认证，仅建议在可信网络内使用。对外网开放时必须显式 `-l http://0.0.0.0:<port>` 并配合 `--serve-token`（所有 API 请求需携带 `X-Serve-Token` 请求头，否则 401）。**注意：API 服务器仅支持 HTTP，`X-Serve-Token` 在局域/公网链路上是明文传输的，token 只提供访问控制、不提供传输加密**——跨不可信网络使用时请务必前置 HTTPS 反向代理（如 nginx/caddy），并避免把 token 写在进程列表可见的明文命令行（优先用环境变量 `BBDOWN_SERVE_TOKEN` 注入）。若 serve 前方确有可信反向代理，可加 `--trusted-proxy`，使认证失败限速按 X-Forwarded-For 中的客户真实 IP 计键（无反代时切勿启用，客户端可伪造 XFF 绕过限速）。`/add-task` 提交的 `host/epHost/tvHost` 仅接受 B 站官方域名、执行路径/代理/工作目录字段一律忽略、请求体上限 64KB。API 服务器不支持 HTTPS。
 
-> 配置注入说明：`serve` 为子命令，其选项（`-l` / `--max-concurrent` / `--serve-token`）**不支持**从配置文件 `BBDown.config` 或环境变量读取，只能通过命令行传入。配置合并（`BBDownConfigParser.MergeWithConfig`）会跳过所有子命令调用，因此 `BBDown.config` 中的选项对 `serve` 不生效。
+> 配置注入说明：`serve` 为子命令，其选项（`-l` / `--max-concurrent` / `--serve-token`）**不支持**从配置文件 `BBDown.config` 读取，只能通过命令行或环境变量传入——其中 `--serve-token` 支持经环境变量 `BBDOWN_SERVE_TOKEN` 注入（优先于 CLI 参数），其余选项仅支持命令行。配置合并（`BBDownConfigParser.MergeWithConfig`）会跳过所有子命令调用，因此 `BBDown.config` 中的选项对 `serve` 不生效。
 
 #### Docker 部署
 
