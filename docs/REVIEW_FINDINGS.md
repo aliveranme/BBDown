@@ -15,6 +15,12 @@
 | RF-5 | ffmpeg `creation_time` 元数据格式文化敏感 | Low | 一行修复（InvariantCulture） | ✅ 已修复（第 9 轮） |
 | RF-6 | mp4box `-itags` cover 值未走 EscapeString | Low（一致性） | 一行修复（补 EscapeString） | ✅ 已修复（第 9 轮） |
 | RF-7 | 配置合并 cliHasUrl 把选项值误判为 URL | Low | 启发式收紧（仅扫描位置参数） | ✅ 已修复（第 9 轮） |
+| RF-8 | FLV 跳过路径不清理封面/字幕/章节（残留累积） | Medium | 与 DASH 分支清理对齐 | ✅ 已修复（第 11 轮） |
+| RF-9 | serve 认证失败限速字典无界增长 | Medium | 超上限按最后失败时间裁剪 | ✅ 已修复（第 11 轮） |
+| RF-10 | serve 已完成任务溢出裁剪按完成顺序误删 | Low | 按 TaskCreateTime 保留最新 | ✅ 已修复（第 11 轮） |
+| RF-11 | Parser 大会员回退硬编码域名 + 子串判定脆弱 | Medium | EpHost 配置化 + JSON message 解析 | ✅ 已修复（第 11 轮） |
+| RF-12 | `BaseUrlRegex` 贪婪匹配误判 query 为端口 | Low | 正则收紧 | ✅ 已修复（第 11 轮） |
+| RF-13 | 登录轮询跟随重定向缺逐跳校验（凭据外发面） | Low | NoRedirect + 每跳可信校验 | ✅ 已修复（第 11 轮） |
 
 ---
 
@@ -99,6 +105,69 @@
 - **定性**：预存启发式的精度问题；触发需要"URL 在配置文件 + 命令行恰好有 URL 形值选项"的组合，真实概率低。
 - **结论**：收紧方向——只对"首个非选项 token"（Spectre 位置参数的位置）应用 UrlLikeToken，或先按 aliasMap 跳过带值选项再扫描（`IsSubCommandInvocation` 已有同构跳过逻辑可复用）。改动属行为微调，建议带回归用例（CLI 传 `--aria2c-proxy http://...` + 配置含 URL）单独落地。
 - **状态**：✅ 已修复（2026-08-29，第 9 轮）：新增 `GetPositionalTokens`（与 `IsSubCommandInvocation` 同构：带值选项吞下一 token、bool 开关与 `--opt=value` 不吞），`cliHasUrl` 只对位置参数应用 UrlLikeToken。`ConfigMergeTests` 新增 3 例回归：`--aria2c-proxy` URL 形值/`--work-dir` av123 形值不再压制配置文件 URL（配置 URL 与选项值均正确合并）、位置参数提取器跳值语义。
+
+---
+
+## RF-8：FLV 跳过路径不清理封面/字幕/章节（残留累积）
+
+- **位置**：`BBDown/Application/Download.cs` — FLV 分支"文件已存在跳过"路径（约 :947-958）。
+- **发现**：DASH 分支的跳过清理（:683-704）会清理本次已下载的封面/字幕/章节并删除空 aid 目录；FLV 分支的跳过路径**只**尝试删空目录，不清理封面/字幕/章节。用户重跑已下载视频时，封面/字幕/章节文件在 aid 工作目录反复累积，且目录非空导致空目录删除逻辑永远不触发。
+- **定性**：真实残留累积（每重跑一次多一套文件）；非安全/数据损坏问题。
+- **核实附带发现**：清理章节用固定名 `chapters`（`Path.Combine(dir, "chapters")`），而 muxer 写入的是**唯一名** `chapters-{basename}`（`BBDownMuxer.cs:136,324`，防并发混流互相覆盖）——旧清理路径根本删不到实际写入的文件，属预存不一致（`BBDownMuxer` 自身 finally 会清理自己的产物，但跳过路径不经过 muxer）。
+- **结论**：收敛为 `Program.DeleteResidualChapterFiles(dir)`：按 `chapters*` 前缀匹配两种命名兜底清理；单文件清理失败静默（IO/句柄异常不掩盖主流程结果）。FLV 跳过路径补封面/字幕清理，与 DASH 分支对齐；fastSkipChecked 跳过路径（:208-223）补章节清理。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+2 测试（前缀清理含固定名/唯一名/不误删其它文件；目录缺失不抛）。
+
+---
+
+## RF-9：serve 认证失败限速字典无界增长
+
+- **位置**：`BBDown/Infrastructure/BBDownApiServer.cs` — `IsAuthLockedOut` / `_authFailures`（:49, :511）。
+- **发现**：`IsAuthLockedOut` 的字典清理只移除**窗口过期**条目（`now - last > 1min`）。攻击者用大量一次性 IP/XFF 值轰炸时，每条都是"最近失败"永不过期——仅删过期条目约束不住字典大小，字典随攻击 IP 数线性增长（内存 DoS）。
+- **定性**：Medium（攻击者可控输入面的无界增长；需要持续伪造新 XFF 值，但 serve 已放行 `--trusted-proxy` 场景下 XFF 由代理注入，攻击者不可直接控制——真实触发需攻击者能控制直连来源 IP 或代理透传，触发面中低，但修复成本极低）。
+- **结论**：超过 `MaxTrackedAuthFailureIps` 时先清过期，仍超限则按最后失败时间裁剪回上限（保留最近活跃的 N 条）。O(n log n) 仅在异常规模触发，正常路径零开销。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+1 测试（反射验证 1.2 倍上限独立 IP 轰炸后字典 ≤ 上限+1）。
+
+---
+
+## RF-10：serve 已完成任务溢出裁剪按完成顺序误删
+
+- **位置**：`BBDown/Infrastructure/BBDownApiServer.cs` — `TrimFinishedTasksLocked`（:675）。
+- **发现**：`finishedTasks` 列表按**完成顺序**追加（`finishedTasks.Add`），与 `TaskCreateTime`（创建顺序）无关。旧实现溢出时 `RemoveRange(0, count - MaxFinishedTasks)` 删除列表头部——若某任务"后创建但先完成"排在头部，会被误删，而更旧的尾部任务被保留，与"保留最新任务"的意图相反。
+- **定性**：Low（需任务完成顺序与创建顺序显著倒挂才可见；真实场景批量并发任务下确有概率）。
+- **结论**：溢出裁剪改为按 `TaskCreateTime` 排序，仅移除最旧创建的溢出条目，保留其余任务原顺序（API 按完成顺序展示）。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+1 测试（构造"后创建先完成"在头部的列表，验证保留最新创建、裁剪最旧创建）。
+
+---
+
+## RF-11：Parser 大会员回退硬编码域名 + 子串判定脆弱
+
+- **位置**：`BBDown.Core/Parser.cs` — 大会员回退（:87-101）。
+- **发现**（两处）：
+  - 回退抓取网页源硬编码 `https://www.bilibili.com/bangumi/play/ep{epId}`，忽略 `Config.Current.EpHost`（镜像站/BiliPlus 配置）——镜像站用户该回退必然失败（被重定向回可能不可达的官方域名）。
+  - 大会员判定用裸子串 `webJson.Contains("\"大会员专享限制\"")`——B 站改文案即失效（历史上文案从"大会员专享限制"演进来过）。
+- **定性**：Medium（镜像站用户的真实功能缺陷 + 文案漂移脆弱性）。
+- **结论**：回退 host 跟随配置（默认配置行为逐字节不变：`EpHost == "api.bilibili.com"` 时用 `www.bilibili.com`，否则用配置的镜像主机）；判定改解析 JSON 根 `message` 字段（`code:-10403, message:大会员专享限制`），非 JSON 响应（风控 HTML）才回退子串兜底。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+2 测试（`IsVipRestrictedResponse` JSON message 5 例 + 非 JSON 兜底 2 例）。
+
+---
+
+## RF-12：`BaseUrlRegex` 贪婪匹配误判 query 为端口
+
+- **位置**：`BBDown.Core/Parser.cs` — `BaseUrlRegex`（:751）。
+- **发现**：原正则 `http.*:\d+` 未锚定 scheme 后立即匹配主机:端口，会把 `http://host/path?x=1:2` 这类 URL 的 query 中 `:数字` 误判为端口——若该 URL 实际无端口，基址推导错误（虽然实际使用中 CDN URL 通常带端口，但 query 参数含时间戳/签名时可能误判）。
+- **定性**：Low（当前使用点 `PickTrackBaseUrl` 的输入为合法 CDN URL，query 带 `:数字` 的场景罕见；正则语义与"提取主机:端口"意图不符是确定性代码缺陷）。
+- **结论**：收紧为 `^https?://[^/:]+:\d+`（锚定起点、主机段不含 `/`/`:`、冒号后必须数字）。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+1 测试（6 例：带端口匹配 / query `:数字` 不误判 / 无端口不匹配 / 缺 scheme 不匹配）。
+
+---
+
+## RF-13：登录轮询跟随重定向缺逐跳校验（凭据外发面）
+
+- **位置**：`BBDown.Core/Util/HTTPUtil.cs` — `GetWebSourceWithSetCookiesAsync`（:217）。
+- **发现**：登录轮询（扫码后轮询二维码状态）携带操作者 Cookie 且响应 `Set-Cookie` 是新凭证下发通道，却使用自动跟随重定向的 `AppHttpClient`——被攻破的 passport 域名或开放重定向可把带凭据的请求与响应 `Set-Cookie` 凭证引向任意主机。与同文件 `GetWebSourceAnonymousCheckedAsync`（匿名逐跳校验）、B3-F2 gRPC POST、RF-4 Widevine 的收口原则不一致。
+- **定性**：Low（纵深防御缺口；入口 URL 为硬编码可信 passport 端点，无当前可利用面；原则一致性修复）。
+- **结论**：改用 `NoRedirectClient` 手动逐跳，每跳 Location 在发起下一跳前必须通过 `IsTrustedCookieHost`，上限 `MaxRedirectHops=10`；与现有 `GetWebSourceCoreAsync` 的 5xx 重试/时钟校准语义保持一致。
+- **状态**：✅ 已修复（2026-08-30，第 11 轮）+2 测试（非可信重定向抛错且不访问下一跳 / 可信同主机重定向跟随成功返回 body）。
 
 ---
 
