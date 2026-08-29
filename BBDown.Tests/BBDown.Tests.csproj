@@ -25,6 +25,7 @@
          开启零副作用，且防止未来误加 Skip 让 CI 静默少跑。官方文档以 Content Include
          复制到输出目录（None Update 对不含项无效）。 -->
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fixtures\**\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

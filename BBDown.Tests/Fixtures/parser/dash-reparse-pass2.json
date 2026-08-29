@@ -1,0 +1,30 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "dash": {
+      "duration": 200,
+      "video": [
+        {
+          "id": 127,
+          "codecid": 12,
+          "bandwidth": 8000000,
+          "width": 7680,
+          "height": 4320,
+          "frame_rate": "60",
+          "size": 200000000,
+          "base_url": "https://upos.example.com/repass-127.m4s"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 320000,
+          "base_url": "https://upos.example.com/repass-30280.m4s"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "dash": {
+      "duration": 60,
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "bandwidth": 2000000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "30",
+          "size": 15000000,
+          "base_url": "https://upos.example.com/dolby80.m4s"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 320000,
+          "base_url": "https://upos.example.com/dolby30280.m4s"
+        }
+      ],
+      "dolby": {
+        "audio": [
+          {
+            "id": 30250,
+            "codecid": 0,
+            "codecs": "ec-3",
+            "bandwidth": 448000,
+            "base_url": "https://upos.example.com/dolby-30250.m4s"
+          },
+          {
+            "id": 30255,
+            "codecid": 0,
+            "codecs": "ec-3",
+            "bandwidth": 768000,
+            "base_url": "https://upos.example.com/dolby-30255.m4s"
+          }
+        ]
+      },
+      "flac": {
+        "audio": {
+          "id": 30251,
+          "codecid": 0,
+          "codecs": "fLaC",
+          "bandwidth": 1200000,
+          "base_url": "https://upos.example.com/dolby-30251.m4s"
+        }
+      }
+    }
+  }
+}

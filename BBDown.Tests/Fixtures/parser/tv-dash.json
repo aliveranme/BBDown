@@ -1,0 +1,28 @@
+{
+  "code": 0,
+  "quality": 80,
+  "dash": {
+    "duration": 300,
+    "video": [
+      {
+        "id": 80,
+        "codecid": 12,
+        "bandwidth": 1000000,
+        "width": 1920,
+        "height": 1080,
+        "frame_rate": "60",
+        "size": 37500000,
+        "base_url": "https://upos.example.com/tv80.m4s"
+      }
+    ],
+    "audio": [
+      {
+        "id": 30280,
+        "codecid": 0,
+        "codecs": "mp4a.40.2",
+        "bandwidth": 320000,
+        "base_url": "https://upos.example.com/tv30280.m4s"
+      }
+    ]
+  }
+}

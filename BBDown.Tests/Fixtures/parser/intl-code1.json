@@ -1,0 +1,29 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "video_info": {
+      "timelength": 150000,
+      "stream_list": [
+        {
+          "stream_info": {
+            "quality": "112"
+          },
+          "dash_video": {
+            "base_url": "https://upos.example.com/intl112.m4s",
+            "bandwidth": 1800000,
+            "codecid": 12,
+            "size": 100000000
+          }
+        }
+      ],
+      "dash_audio": [
+        {
+          "id": "1",
+          "base_url": "https://upos.example.com/intl-a1.m4s",
+          "bandwidth": 192000
+        }
+      ]
+    }
+  }
+}

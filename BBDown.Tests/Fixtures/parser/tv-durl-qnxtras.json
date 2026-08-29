@@ -1,0 +1,20 @@
+{
+  "code": 0,
+  "quality": 64,
+  "video_codecid": 7,
+  "qn_extras": [
+    {
+      "qn": "116"
+    },
+    {
+      "qn": "64"
+    }
+  ],
+  "durl": [
+    {
+      "url": "https://upos.example.com/tvseg.flv",
+      "size": 500000,
+      "length": 1000000
+    }
+  ]
+}

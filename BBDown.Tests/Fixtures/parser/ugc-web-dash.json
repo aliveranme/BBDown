@@ -1,0 +1,62 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "quality": 80,
+    "timelength": 6215000,
+    "dash": {
+      "duration": 6215,
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "bandwidth": 2000000,
+          "width": 1920,
+          "height": 1080,
+          "frame_rate": "30",
+          "size": 1553751234,
+          "base_url": "https://upos.example.com/80.m4s",
+          "backup_url": [
+            "https://upos.example.com/80-bak.m4s"
+          ]
+        },
+        {
+          "id": 64,
+          "codecid": 12,
+          "bandwidth": 1000000,
+          "width": 1280,
+          "height": 720,
+          "frame_rate": "30",
+          "size": 776875617,
+          "base_url": "https://upos.example.com/64.m4s"
+        },
+        {
+          "id": 32,
+          "codecid": 13,
+          "bandwidth": 500000,
+          "width": 852,
+          "height": 480,
+          "frame_rate": "30",
+          "size": 388437808,
+          "base_url": "https://upos.example.com/32.m4s"
+        }
+      ],
+      "audio": [
+        {
+          "id": 30280,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 320000,
+          "base_url": "https://upos.example.com/30280.m4s"
+        },
+        {
+          "id": 30216,
+          "codecid": 0,
+          "codecs": "mp4a.40.2",
+          "bandwidth": 64000,
+          "base_url": "https://upos.example.com/30216.m4s"
+        }
+      ]
+    }
+  }
+}

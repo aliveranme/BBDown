@@ -1,0 +1,32 @@
+{
+  "code": 0,
+  "message": "success",
+  "result": {
+    "video_info": {
+      "dash": {
+        "duration": 1400,
+        "video": [
+          {
+            "id": 116,
+            "codecid": 12,
+            "bandwidth": 3000000,
+            "width": 1920,
+            "height": 1080,
+            "frame_rate": "60",
+            "size": 525000000,
+            "base_url": "https://upos.example.com/ep116.m4s"
+          }
+        ],
+        "audio": [
+          {
+            "id": 30280,
+            "codecid": 0,
+            "codecs": "mp4a.40.2",
+            "bandwidth": 320000,
+            "base_url": "https://upos.example.com/ep30280.m4s"
+          }
+        ]
+      }
+    }
+  }
+}

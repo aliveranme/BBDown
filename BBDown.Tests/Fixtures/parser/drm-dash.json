@@ -1,0 +1,24 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "is_drm": true,
+    "drm_tech_type": 2,
+    "drm_type": "Widevine",
+    "dash": {
+      "duration": 100,
+      "video": [
+        {
+          "id": 80,
+          "codecid": 12,
+          "bandwidth": 1000000,
+          "size": 12500000,
+          "base_url": "https://upos.example.com/drm80.m4s",
+          "bilidrm_uri": "bilidrm://0123456789abcdef0123456789abcdef",
+          "widevine_pssh": "QAAAAGB3aWRldmluZQ5WLRhD7hZl"
+        }
+      ],
+      "audio": []
+    }
+  }
+}

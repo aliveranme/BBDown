@@ -1,0 +1,23 @@
+{
+  "code": 0,
+  "quality": 80,
+  "video_codecid": 7,
+  "timelength": 6215000,
+  "accept_quality": [
+    "80",
+    "64",
+    "32"
+  ],
+  "durl": [
+    {
+      "url": "https://upos.example.com/seg1.flv",
+      "size": 1000000,
+      "length": 3000000
+    },
+    {
+      "url": "https://upos.example.com/seg2.flv",
+      "size": 2000000,
+      "length": 3215000
+    }
+  ]
+}
