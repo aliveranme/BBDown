@@ -30,7 +30,7 @@
 | RF-20 | 跳过路径清理一致性残留（锁内 Skipped 漏 coverPath、dash 跳过路径裸删） | Low | 采纳（与 flv 分支对齐） | ✅ 已修复（第 12 轮） |
 | RF-21 | aria2c stdin input-file 换行注入面 | Low | 采纳（写前剔除 \r\n） | ✅ 已修复（第 12 轮） |
 | RF-22 | 进程执行边界（探针未观察管道任务；成功路径 5s 兜底翻转成功） | Low | 部分采纳（探针改异步执行器；成功路径语义先确认） | ✅ 探针已修复（第 12 轮）；成功路径 ⭕ 维持现状 |
-| RF-23 | mp4box 输出 `.muxing-{guid}` 未知扩展名兼容性 | Low | 待议（需 GPAC 实测后定） | ⏳ 待议（本机无 GPAC 实测环境） |
+| RF-23 | mp4box 输出 `.muxing-{guid}` 未知扩展名兼容性 | Low | 待议（需 GPAC 实测后定） | ✅ 已修复（第 12 轮补遗：临时名补 .mp4 后缀） |
 | RF-24 | SanitizeUntrustedOptions 漏 interactive | Low | 采纳（一行清零） | ✅ 已修复（第 12 轮） |
 | RF-25 | 解析失败日志 option.Url 未单行化（两处） | Low | 采纳（补 SanitizeLogString） | ✅ 已修复（第 12 轮） |
 | RF-26 | Core 解析/网络健壮性低危族（5 小项） | Low | 采纳（随批次逐项落地） | ✅ 已修复（第 12 轮） |
@@ -282,7 +282,7 @@
 - **位置**：`BBDown/Application/Download.cs:236,240`（混流事务化临时名）、`BBDown/Infrastructure/BBDownMuxer.cs:184`（mp4box 分支把该路径直接作为 `-new` 输出参数）。
 - **发现**：混流事务化把输出统一改为 `savePath + ".muxing-{guid:N}"`。ffmpeg 用 `-f mp4` 强制格式不受影响；但 GPAC 按扩展名推断输出封装格式，`.muxing-xxx` 属未知扩展名——旧版 GPAC（gf_isom_open 直写）无碍，较新的 filter-based MP4Box 行为随版本而异（可能告警回退 mp4，也可能直接失败）。仓库内无针对此的测试或注释；若目标 GPAC 版本严格，则所有 mp4box 路径（`--use-mp4box` 与杜比视界自动切换）都会失败。
 - **结论**：待议——先在装有 GPAC 的环境实测确认；若不兼容，让 mp4box 分支输出到 `Path.ChangeExtension(muxingPath, ".mp4")` 的临时名（保持唯一性）。
-- **状态**：⏳ 待议（第 12 轮登记；本机/CI 均无 GPAC 实测环境，待有环境后验证）。
+- **状态**：✅ 已修复（2026-08-30，第 12 轮补遗）：临时名改为 `.muxing-{guid:N}.mp4`——不再依赖 GPAC 对未知扩展名的容忍度，新旧版本全部确定性走 ISOM 封装（ffmpeg 分支本就用 `-f mp4` 强制格式，不受影响）；`muxingPath` 仅被精确路径引用（无模式清理、无测试断言格式名），改动零波及。无需 GPAC 实测即可定案。
 
 ---
 

@@ -228,16 +228,19 @@ internal partial class Program
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             return MuxOutcome.Skipped;
         }
-        // 混流产物事务化：ffmpeg/mp4box 写入唯一的 .muxing-{guid} 临时路径而非最终 savePath。
+        // 混流产物事务化：ffmpeg/mp4box 写入唯一的 .muxing-{guid}.mp4 临时路径而非最终 savePath。
         // 此前直接写最终路径，非零退出/取消后只返回 Failed 不删除半成品，下次运行发现
         // "存在且非空"就跳过，可能永久保留截断视频并报告成功。临时产物成功且校验通过后
         // 才原子替换到最终路径；失败/取消清理临时产物，绝不留半成品当成品。
+        // 临时名以 .mp4 结尾（RF-23）：mp4box（GPAC）按扩展名推断输出封装格式，未知扩展名
+        // 在新版 filter-based MP4Box 上行为随版本而异；.mp4 后缀让新旧版本全部确定性走
+        // ISOM 封装，ffmpeg 分支本就用 -f mp4 强制格式，不受影响。
         // 轨道文件（已下载的音视频/字幕）清理必须覆盖"成功/失败/异常"全部路径：
         // 此前只在成功路径清理，混流失败或 MuxAV 抛异常（超时/取消/进程失败）时，
         // GB 级的视频/音频轨道文件残留在 aid 工作目录，多 P 批量反复失败会累积大量磁盘占用。
         // 因此这里把轨道清理并入 finally（见 CleanupDownloadedTracks），与 .muxing-*
         // 临时产物一并兜底。
-        var muxingPath = savePath + $".muxing-{Guid.NewGuid():N}";
+        var muxingPath = savePath + $".muxing-{Guid.NewGuid():N}.mp4";
         bool muxSucceeded = false;
         try
         {

@@ -337,7 +337,9 @@ public static partial class HTTPUtil
                     List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
                     return (htmlCode, setCookies);
                 }
-                throw new HttpRequestException($"重定向跳数超过上限 ({MaxRedirectHops})");
+                // 确定性失败（跳数上限/重定向环）用 InvalidOperationException：HttpRequestException
+                // 的 StatusCode 为 null 会命中重试过滤器，把整个 10 跳流程重打最多 3 遍
+                throw new InvalidOperationException($"重定向跳数超过上限 ({MaxRedirectHops})");
             }
             catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
             {
