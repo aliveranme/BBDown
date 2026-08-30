@@ -222,7 +222,7 @@
 
 ## 第 12 轮附：消纳批 RF-14~RF-29（2026-08-30）
 
-> 消纳第 12 轮登记的发现（分支 `fix/review-r12-findings`）。14 项修复落地；RF-23 待议（本机/CI 均无 GPAC 实测环境）、RF-27 维持现状定案。
+> 消纳第 12 轮登记的发现（分支 `fix/review-r12-findings`）。15 项修复落地（含补遗 RF-23，临时名补 `.mp4` 后缀无需 GPAC 实测即定案）；RF-27 维持现状定案。
 
 | 项 | 处理 |
 |----|------|
@@ -235,12 +235,14 @@
 | RF-20 | ✅ 锁内权威 Skipped 分支补 coverPath 清理；dash 分支裸删全部包裹（封面 1 处、弹幕 XML 3 处、aid 目录 3 处、flv 弹幕 2 处对齐），统一 `catch (IOException or UnauthorizedAccessException)` |
 | RF-21 | ✅ aria2c stdin 的 URL/Cookie 写入前剥离 CR/LF（注入的指令行语义消除，畸形 URI 由退出码校验兜底）；+1 测试（注入 cookie/双 URI 场景断言单行化） |
 | RF-22 | ✅ `CheckFFmpegDOVI` 改真异步 `CheckFFmpegDOVIAsync`（WaitForExitAsync+WaitAsync 5s；超时分支补观察管道任务防 UnobservedTaskException），调用点改 await；ExternalProcessRunner 成功路径 5s 兜底 ⭕ 维持现状（有意设计，注释在位） |
+| RF-23 | ✅ （补遗）混流临时名改为 `.muxing-{guid:N}.mp4`——不再依赖 GPAC 对未知扩展名的容忍度（新版 filter-based MP4Box 按扩展名推断输出封装），新旧版本全部确定性走 ISOM；ffmpeg 分支 `-f mp4` 强制格式不受影响；`muxingPath` 仅精确路径引用，改动零波及 |
 | RF-24 | ✅ `SanitizeUntrustedOptions` 补 `req.Interactive = false`（阻塞占死并发槽面消除）；既有 ClearsExecutionFields 测试补断言 |
 | RF-25 | ✅ 解析失败日志两处 `option.Url`（及异常消息）过 `SanitizeLogString` |
 | RF-26 | ✅ 5 小项全落地：① 免二压降级 dolby/flac 重复追加——applied 标志守卫 + 新文档接管时重置；② AppHelper GetHeader 移除硬编码 `Host: grpc.biliapi.net`（由 HttpClient 按 URI 生成，番剧 gRPC SNI/Host 不再错位）；③ FavListFetcher 翻页空页 break（对齐其余 fetcher 停滞语义）；④ IntlBangumiInfoFetcher 删除多余 `.Replace("\\/","/")`；⑤ `x/player/wbi/v2` 两处（SubUtil/BBDownUtil）登录态补 WbiSign（aid/cid/wts 升序），未登录保持无签名 |
 | RF-27 | ⭕ 维持现状定案（详见 FINDINGS） |
 | RF-28 | ✅ HTTPUtil 新增 `MaxResponseBodyBytes`（64MB）+ `ReadContentBoundedAsync`（Content-Length 预检 + 逐块累计双拦截）替换 `ReadAsStringAsync`/`ReadAsByteArrayAsync`，`DecodeBodyBytes` 按 charset 解码；+1 判定函数测试（64MB 上限无法廉价构造真实响应） |
 | RF-29 | ✅ 4 文件去 BOM/补末尾换行（BBDown.Core.csproj、BBDown.Tests.csproj、codeql.yml、dependabot.yml） |
+| Info 级观察 | ✅ 消纳 8 项：AddSavePath 去重（Skipped+成功双记导致 API 快照重复）；serve API 响应补 `Cache-Control: no-store`/`X-Content-Type-Options`、429 补 `Retry-After: 60`；任务持久化 tmp 名带 GUID（对齐 SubscriptionStore，多实例同目录不再互踩）；HTTPUtil 重定向超限改抛 InvalidOperationException（HttpRequestException StatusCode=null 误命中重试谓词）；TestPort.Allocate 进程内去重（TOCTOU 偶发 AddressAlreadyInUse）；ClockCalibrationTests expected 基准移到调用前；.dockerignore 补 .git/Tests/docs 等排除（context 瘦身）；sync-wiki.ps1 健壮化（$LASTEXITCODE 检查、废弃页面清理、try/finally 回目录）。⭕ 维持观察 4 项：webhook 页数语义（需产品决策）、番剧 pub_time 本机时区解析、WbiSign 未排序（当前可用）、Windows 哨兵采样窗口（漏报仅影响测试证据强度） |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 666/666 全绿（+7）；LocalIntegration 3/3；serve Host 校验不破坏既有回环用例 |
 
 ---

@@ -374,3 +374,20 @@ debug_*.json
 /BBDown/*.mp4
 /BBDown/*.xml
 /BBDown/*.ass
+
+# ============ Build context 瘦身（Dockerfile 仅 COPY BBDown.Core/ 与 BBDown/）============
+# 此前为 VS gitignore 复制，未排除 .git（全部 git 历史）与测试/文档/CI 等非构建目录，
+# CI 构建/发布时 context 传输显著偏大。正确性不受影响（这些目录不参与镜像构建）。
+.git/
+.github/
+.claude/
+.pi/
+.vs/
+.idea/
+BBDown.Tests/
+docs/
+assets/
+scripts/
+*.md
+.tmp
+

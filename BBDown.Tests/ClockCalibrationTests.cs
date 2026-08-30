@@ -23,9 +23,12 @@ public class ClockCalibrationTests
             var serverDate = DateTimeOffset.UtcNow.AddMinutes(5);
             response.Headers.Date = serverDate;
 
+            // expected 基准必须在调用前取（Info 级观察）：若在 CalibrateClock 之后计算，
+            // CI 卡顿 >3s 会把执行延迟算进容差造成假失败
+            long expected = (long)Math.Round((serverDate - DateTimeOffset.UtcNow).TotalSeconds);
+
             HTTPUtil.CalibrateClock(response);
 
-            long expected = (long)Math.Round((serverDate - DateTimeOffset.UtcNow).TotalSeconds);
             Assert.InRange(Config.Current.ServerClockOffsetSeconds, expected - 3, expected + 3);
         }
         finally { Config.Apply(original); }

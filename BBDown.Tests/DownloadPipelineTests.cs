@@ -17,16 +17,29 @@ internal static class TestHash
 }
 
 /// <summary>动态申请一个空闲回环端口：避免多个测试服务器共用同一端口时，
-/// HttpClient 连接池复用上一实例的陈旧连接，使请求计数/脚本响应错乱。</summary>
+/// HttpClient 连接池复用上一实例的陈旧连接，使请求计数/脚本响应错乱。
+/// 进程内去重（Info 级观察）：bind-0 → 取端口 → Stop 之间存在 TOCTOU——
+/// 另一个并行测试的 Allocate 可能拿到同一端口，随后 HttpListener.Start 抛
+/// AddressAlreadyInUse 使用例偶发失败。用 HashSet 记录本进程已分配端口并跳过复用。</summary>
 internal static class TestPort
 {
+    private static readonly object _gate = new();
+    private static readonly HashSet<int> _allocated = new();
+
     public static int Allocate()
     {
-        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        lock (_gate)
+        {
+            for (int attempt = 0; attempt < 100; attempt++)
+            {
+                using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                listener.Start();
+                int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+                listener.Stop();
+                if (_allocated.Add(port)) return port;
+            }
+            throw new InvalidOperationException("动态端口分配重试 100 次仍重复，测试环境异常");
+        }
     }
 }
 

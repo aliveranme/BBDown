@@ -6,6 +6,7 @@
 
 ### 修复
 
+- **mp4box 混流临时产物扩展名兼容性**：混流事务化的临时输出名 `.muxing-{guid}` 为未知扩展名，mp4box（GPAC）按扩展名推断输出封装格式，新版 filter-based MP4Box 上行为随版本而异（可能告警回退甚至失败）。现临时名以 `.mp4` 结尾，新旧版本全部确定性走 ISOM 封装（ffmpeg 分支本就用 `-f mp4` 强制格式，不受影响）。
 - **多线程下载遇不支持 Range 的服务器时整批中止**：多线程分片路径在服务器以 200 响应 Range 请求时抛出的 `NotSupportedException`（及其它白名单外异常）会穿透页面级与批级两级 catch 过滤器，导致多 P 批量中一 P 命中即放弃剩余分 P、丢失完成通知与失败汇总。现抛出点规范化为 `InvalidOperationException` 并将过滤器补齐 `AggregateException`。
 - **SubOnly 模式 ASS 字幕产物扩展名错误**：ASS 内容字幕被无条件改名为 `.srt`，播放器无法渲染。现按源字幕内容形态决定目标扩展名。
 - **`<publishDate:...>`/`<videoDate:...>` 占位符在特定区域设置下产出非法文件名**：自定义日期格式的 `:` 是时间分隔符占位符，fi-FI 等区域下输出形如 `22.13`，en-US 下输出含 `:`（Windows 上可写入 NTFS 备用数据流，资源管理器不可见）。现固定 InvariantCulture 格式化并对替换值做文件名净化（与 ffmpeg `creation_time` 的收口同构）。
@@ -21,7 +22,9 @@
 
 ### 改进
 
-- **进程与解析层健壮性**：直播杜比视界的 ffmpeg 版本探测改真异步（不再在下载链路同步阻塞最多 5 秒，超时后补观察管道任务）；用户取消（Ctrl+C/关停）不再被解析层"免二压重发"降级路径吞掉；免二压降级路径下杜比/Hi-Res 音轨不再重复追加；番剧 gRPC 移除与目标主机不符的硬编码 Host 头；收藏夹翻页遇空页提前结束（防畸形 media_count 触发请求洪泛）；国际版番剧接口删除多余的双重转义替换。
+- **serve API 响应与持久化健壮性**：`/get-tasks` 族响应补 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`（任务数据含服务器绝对路径，禁止缓存落盘），认证限速与查询限速的 429 响应补 `Retry-After: 60`；任务持久化临时文件名带 GUID（对齐订阅历史，同目录多实例不再互相踩踏写盘）；同一产物不再在任务快照中重复记录（`AddSavePath` 去重）。
+- **wiki 同步脚本健壮化**：`scripts/sync-wiki.ps1` 检查 git 命令退出码（此前 commit 失败仍报成功）、自动清理 wiki 上源目录已删除的页面、异常时恢复调用目录。
+- **进程与解析层健壮性**：直播杜比视界的 ffmpeg 版本探测改真异步（不再在下载链路同步阻塞最多 5 秒，超时后补观察管道任务）；用户取消（Ctrl+C/关停）不再被解析层"免二压重发"降级路径吞掉；免二压降级路径下杜比/Hi-Res 音轨不再重复追加；番剧 gRPC 移除与目标主机不符的硬编码 Host 头；收藏夹翻页遇空页提前结束（防畸形 media_count 触发请求洪泛）；国际版番剧接口删除多余的双重转义替换；登录轮询的重定向跳数上限改为确定性失败（不再误触发整流程重试）。
 - **文档修正**：wiki 退出码表删除虚构的 `2`/`3` 退出码并修正 Ctrl+C 归属（主命令实际返回 130、子命令 0、工具缺失归 1）；参数总表补 `--host`/`--ep-host`/`--tv-host`/`--area`；README serve 配置注入说明补全选项列举。
 - **CLI 命令层全量迁移 `AsyncCommand`**：`login`/`logintv`/`article`/`live`/`sub check`/`watchlater`/`serve` 7 个命令不再以 `Task.Run + GetAwaiter().GetResult()` 阻塞线程池线程等待异步操作（serve 长驻进程此前整个生命周期额外占用 1 个阻塞线程）；serve 链路改为真异步（`RunAsync`/`StartServerAsync`），监听地址前置校验独立为 `ValidateListenUrl`。各命令退出码与错误语义不变。
 

@@ -179,6 +179,10 @@ public partial class BBDownApiServer
                 || path.StartsWithSegments("/remove-finished");
             if (isApi)
             {
+                // 安全响应头（Info 级观察）：API 响应含任务数据/绝对路径，禁止缓存落盘；
+                // nosniff 防 MIME 嗅探。429 的 Retry-After 在各自拒绝点单独附加。
+                context.Response.Headers.CacheControl = "no-store";
+                context.Response.Headers["X-Content-Type-Options"] = "nosniff";
                 if (!string.IsNullOrEmpty(_serveToken) && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
                     var clientIp = GetClientIp(context);
@@ -188,6 +192,7 @@ public partial class BBDownApiServer
                     {
                         // 1 分钟窗口内失败超阈值：限速拒绝，令 X-Serve-Token 暴力枚举失效。
                         Logger.LogWarn($"serve 认证失败过于频繁，已限速: {clientIp}");
+                        context.Response.Headers.RetryAfter = "60";
                         context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
                         return;
                     }
@@ -234,6 +239,8 @@ public partial class BBDownApiServer
         {
             if (!_queryLimiter.Wait(0))
             {
+                // Retry-After 提示客户端何时可重试（限速语义与认证限速一致）
+                ctx.HttpContext.Response.Headers.RetryAfter = "60";
                 return Results.Problem(
                     "查询过于频繁，请稍后再试",
                     statusCode: StatusCodes.Status429TooManyRequests,
@@ -669,7 +676,9 @@ public partial class BBDownApiServer
                     snapshot = finishedTasks.Select(t => t.Snapshot()).ToList();
                 }
                 var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
-                var tmpFile = _taskFile + ".tmp";
+                // tmp 名带 GUID（对齐 SubscriptionStore.AtomicWrite）：固定 .tmp 名会让同目录
+                // 的多个 serve 实例并发写盘互相踩踏；代价是崩溃瞬间可能残留孤儿 tmp 文件（罕见且无害）。
+                var tmpFile = _taskFile + $".tmp-{Guid.NewGuid():N}";
                 using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
                 {
@@ -1439,10 +1448,15 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
     // 写者一律经 AddSavePath 走这把锁；_savePathLock 不能是 primary constructor 属性。
     private readonly object _savePathLock = new();
 
-    /// <summary>受控写入口：与 Snapshot 的深拷贝在同一把锁下，避免枚举期间被并发修改。</summary>
+    /// <summary>受控写入口：与 Snapshot 的深拷贝在同一把锁下，避免枚举期间被并发修改。
+    /// 去重（Info 级观察）：锁内 Skipped 分支与成功路径会对同一 savePath 各 Add 一次，
+    /// 导致 API 快照中同一产物出现两条——产物列表语义是集合而非序列。</summary>
     public void AddSavePath(string path)
     {
-        lock (_savePathLock) { SavePaths.Add(path); }
+        lock (_savePathLock)
+        {
+            if (!SavePaths.Contains(path)) SavePaths.Add(path);
+        }
     }
 
     /// <summary>线程安全地更新状态字段（下载线程写，查询端点读）。</summary>
