@@ -45,7 +45,10 @@ partial class Program
     {
         try
         {
-            return ts == 0 ? "null" : DateTimeOffset.FromUnixTimeSeconds(ts).ToLocalTime().ToString(format);
+            // InvariantCulture（RF-19）：自定义格式串的 `:` 是"时间分隔符"占位符而非字面字符，
+            // CurrentCulture 在 fi-FI 等区域设置下会替换为本地分隔符（与 RF-5 creation_time
+            // 同构收口）。产物文件名合法性由 PathHelper 的 GetValidFileName 负责。
+            return ts == 0 ? "null" : DateTimeOffset.FromUnixTimeSeconds(ts).ToLocalTime().ToString(format, System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (Exception ex) when (ex is ArgumentOutOfRangeException or FormatException)
         {

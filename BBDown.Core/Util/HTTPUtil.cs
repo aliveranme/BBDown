@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace BBDown.Core.Util;
 
@@ -25,6 +26,62 @@ public static partial class HTTPUtil
             SslOptions = CreateSslOptions(skipSslCheck),
         };
         return new HttpClient(handler) { Timeout = timeout };
+    }
+
+    /// <summary>
+    /// 响应体大小上限（RF-28）：防被攻破端点或 --insecure 中间人用巨包/分块慢发响应
+    /// 耗尽进程内存。gzip 解压侧已有 48MB 上限（AppHelper.GzipDecompress），
+    /// 本上限覆盖压缩响应体本体与普通响应体本体（自动解压后可能更大，按解压后计）。
+    /// </summary>
+    internal const long MaxResponseBodyBytes = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// 有界读取响应体：Content-Length 可信（非 chunked）时超限直接拒读；
+    /// 无长度声明时逐块读取累计计数，超限抛 InvalidDataException（确定性失败，
+    /// 不参与 5xx 重试）。与 ReadAsStringAsync/ReadAsByteArrayAsync 等价但带内存上限。
+    /// </summary>
+    private static async Task<byte[]> ReadContentBoundedAsync(HttpContent content, CancellationToken token)
+    {
+        EnsureBodySizeAllowed(content.Headers.ContentLength);
+        using var stream = await content.ReadAsStreamAsync(token);
+        var buffer = new MemoryStream();
+        var chunk = new byte[64 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await stream.ReadAsync(chunk, token)) > 0)
+        {
+            total += read;
+            EnsureBodySizeAllowed(total);
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// 响应体大小校验（RF-28）：Content-Length 可信（非 chunked）时超限在读取前直接拒；
+    /// 无长度声明时由 <see cref="ReadContentBoundedAsync"/> 逐块累计后调用本方法拦截。
+    /// 抛 InvalidDataException（确定性失败，不命中 5xx/超时重试过滤器）。
+    /// internal 供测试直接验证判定逻辑（64MB 上限本身在测试里无法廉价触发）。
+    /// </summary>
+    internal static void EnsureBodySizeAllowed(long? contentLengthOrTotal)
+    {
+        if (contentLengthOrTotal is long len && len > MaxResponseBodyBytes)
+            throw new InvalidDataException($"响应体大小 ({len} 字节) 超过 {MaxResponseBodyBytes} 字节上限，已中止读取");
+    }
+
+    /// <summary>按响应的 Content-Type charset 解码字节为字符串（默认 UTF-8，非法 charset 回落 UTF-8）。</summary>
+    private static string DecodeBodyBytes(HttpContent content, byte[] bytes)
+    {
+        var charSet = content.Headers.ContentType?.CharSet;
+        if (string.IsNullOrEmpty(charSet)) return Encoding.UTF8.GetString(bytes);
+        try
+        {
+            return Encoding.GetEncoding(charSet).GetString(bytes);
+        }
+        catch (ArgumentException)
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
     }
 
     private static System.Net.Security.SslClientAuthenticationOptions CreateSslOptions(bool skipSslCheck)
@@ -271,7 +328,8 @@ public static partial class HTTPUtil
                         throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
                     webResponse.EnsureSuccessStatusCode();
 
-                    string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
+                    byte[] bodyBytes = await ReadContentBoundedAsync(webResponse.Content, timeoutCts.Token);
+                    string htmlCode = DecodeBodyBytes(webResponse.Content, bodyBytes);
                     // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
                     // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
                     if (Config.Current.DebugLog)
@@ -755,7 +813,7 @@ public static partial class HTTPUtil
                 if (!response.IsSuccessStatusCode && (int)response.StatusCode >= 500)
                     throw new HttpRequestException($"服务器返回 {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
                 response.EnsureSuccessStatusCode();
-                byte[] bytes = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token);
+                byte[] bytes = await ReadContentBoundedAsync(response.Content, timeoutCts.Token);
                 // HTML 风控/错误页首字节是 '<'（0x3C），不可能是合法 grpc 帧头 → 明确报错
                 if (bytes.Length > 0 && bytes[0] == (byte)'<')
                     throw new RiskControlResponseException(Url);

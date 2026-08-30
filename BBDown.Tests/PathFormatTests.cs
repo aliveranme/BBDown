@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace BBDown.Tests;
 
 /// <summary>
@@ -27,5 +29,43 @@ public class PathFormatTests
     {
         Assert.Equal(expected,
             Program.ResolveSavePathFormat(filePattern, multiFilePattern, actualPageCount, useMultiWhenSingle));
+    }
+
+    /// <summary>
+    /// RF-19：publishDate/videoDate 占位符必须 (a) 固定 InvariantCulture（自定义格式串的
+    /// `:` 是时间分隔符占位符，fi-FI 等区域下输出为 `.`，产物跨机漂移），(b) 替换值再过
+    /// GetValidFileName（en-US 下 HH:mm 产出含 `:` 的路径，Windows 上可写成 NTFS 备用
+    /// 数据流——File.Exists 为真但资源管理器不可见）。
+    /// </summary>
+    [Fact]
+    public void FormatSavePath_DatePlaceholders_AreInvariantAndSanitized()
+    {
+        long ts = 1700000000;
+        var page = new BBDown.Core.Entity.Entity.Page(1, "123", "456", "", "t", 60, "", ts);
+        var originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            // fi-FI 的时间分隔符是 '.'：若 FormatTimeStamp 未固定 InvariantCulture，
+            // <publishDate:HH:mm> 会产出 22.13 而非 22:13（再被 GetValidFileName 漏过，
+            // 因为 '.' 不在 InvalidChars 里——净化必须建立在 Invariant 输出之上）
+            CultureInfo.CurrentCulture = new CultureInfo("fi-FI");
+
+            var expectedInvariant =
+                DateTimeOffset.FromUnixTimeSeconds(ts).ToLocalTime().ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture)
+                    .Replace(":", "_"); // GetValidFileName 将 ':' 替换为 '_'
+
+            // 注：InfoRegex 为 <([\w:\-.]+?)>，占位符内不允许空格，格式串用 'T' 分隔日期与时间
+            Assert.Equal(expectedInvariant + ".mp4",
+                Program.FormatSavePath("<publishDate:yyyy-MM-ddTHH:mm>", "t", null, null, page, 1, "web", ts));
+            // videoDate 用 p.pubTime，行为一致
+            Assert.Equal(expectedInvariant + ".mp4",
+                Program.FormatSavePath("<videoDate:yyyy-MM-ddTHH:mm>", "t", null, null, page, 1, "web", 0));
+            // 产物不含任何 Windows 非法路径字符
+            Assert.DoesNotContain(":", Program.FormatSavePath("<publishDate:yyyy-MM-ddTHH:mm:ss>", "t", null, null, page, 1, "web", ts));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
     }
 }

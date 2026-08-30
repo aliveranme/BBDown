@@ -14,6 +14,22 @@ namespace BBDown.Tests;
 /// </summary>
 public class HttpUtilRetryTests
 {
+    /// <summary>
+    /// RF-28：响应体大小校验——Content-Length/累计读取量超过 MaxResponseBodyBytes
+    /// 时必须抛 InvalidDataException（确定性失败，不参与重试），防被攻破端点/
+    /// --insecure 中间人用巨包/分块慢发响应耗尽进程内存（gzip 解压侧 48MB 上限的
+    /// 本体层补充）。64MB 本身在测试中无法廉价构造，直接验证判定函数。
+    /// </summary>
+    [Fact]
+    public void EnsureBodySizeAllowed_RejectsOverLimit_AcceptsUnderLimit()
+    {
+        Assert.Throws<InvalidDataException>(() => HTTPUtil.EnsureBodySizeAllowed(HTTPUtil.MaxResponseBodyBytes + 1));
+        // 边界内放行：恰等于上限、更小、null（chunked 无长度声明时由累计读取拦截）
+        HTTPUtil.EnsureBodySizeAllowed(HTTPUtil.MaxResponseBodyBytes);
+        HTTPUtil.EnsureBodySizeAllowed(1);
+        HTTPUtil.EnsureBodySizeAllowed(null);
+    }
+
     [Fact]
     public async Task GetWebSource_CookieNonTrustedHost_ThrowsBeforeNetwork()
     {

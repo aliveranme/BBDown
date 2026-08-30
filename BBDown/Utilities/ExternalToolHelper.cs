@@ -11,7 +11,10 @@ public static class ExternalToolHelper
     /// <summary>
     /// 检测ffmpeg是否识别杜比视界
     /// </summary>
-    public static bool CheckFFmpegDOVI()
+    /// <remarks>RF-22：改真异步——原 <c>WaitForExit(5000)</c> + <c>GetAwaiter().GetResult()</c>
+    /// 在 async 下载链路中同步阻塞线程（杜比视界命中时每 P 最多 5 秒），且超时分支
+    /// 直接 return 不观察 stdout/stderr 读取任务（UnobservedTaskException 面）。</remarks>
+    public static async Task<bool> CheckFFmpegDOVIAsync()
     {
         try
         {
@@ -25,12 +28,19 @@ public static class ExternalToolHelper
             process.Start();
             var outTask = process.StandardOutput.ReadToEndAsync();
             var errTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(5000))
+            try
             {
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (TimeoutException)
+            {
+                // Kill 整树后仍须观察管道任务（Kill 后管道断裂可能以异常完成），
+                // 与 ExternalProcessRunner 的收尾语义一致，防 UnobservedTaskException。
                 try { process.Kill(true); } catch { }
+                try { await Task.WhenAll(outTask, errTask); } catch { }
                 return false;
             }
-            string info = outTask.GetAwaiter().GetResult() + Environment.NewLine + errTask.GetAwaiter().GetResult();
+            string info = await outTask + Environment.NewLine + await errTask;
             var match = BBDownUtil.LibavutilRegex().Match(info);
             if (!match.Success) return false;
             int major = Convert.ToInt32(match.Groups[1].Value);

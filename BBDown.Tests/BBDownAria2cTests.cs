@@ -94,4 +94,46 @@ public class BBDownAria2cTests
             BBDownAria2c.ProcessRunner = original;
         }
     }
+
+    /// <summary>
+    /// RF-21：URL 与 Cookie 是外部输入（API 响应/用户配置），aria2c input-file 的
+    /// 换行即指令行分隔符——含 CR/LF 的值必须剥离后再写 stdin，否则可注入任意
+    /// aria2c 指令行（新 URI/all-proxy/dir 等）。
+    /// </summary>
+    [Fact]
+    public async Task DownloadFileByAria2cAsync_StripsNewlinesFromUrlAndCookie()
+    {
+        var fake = new FakeAria2cRunner(exitCode: 0);
+        var original = BBDownAria2c.ProcessRunner;
+        var originalConfig = Core.Config.Current;
+        try
+        {
+            BBDownAria2c.ProcessRunner = fake;
+            Core.Config.ApplyToCurrentAsyncFlow(originalConfig with
+            {
+                Cookie = "SESSDATA=abc\r\n  all-proxy=http://evil:8080"
+            });
+
+            await BBDownAria2c.DownloadFileByAria2cAsync(
+                "http://cdn.example/a.mp4\nhttp://evil.example/b.mp4", "out/a.mp4", "");
+
+            var stdin = fake.Specs.Single().StandardInput;
+            // 换行剥离后 cookie 值保持单行：注入的 "  all-proxy=..." 不再构成独立指令行
+            //（前面没有换行分隔符，aria2c 只把整行当作 Cookie 头的值）
+            Assert.DoesNotContain("\n  all-proxy", stdin);
+            Assert.DoesNotContain("\r", stdin);
+            // 注入的第二个 URI 不得成为独立指令行：与原 URI 合并成一行畸形 URI
+            //（aria2c 会因非法 URI 报非零退出，由退出码校验兜底）
+            Assert.DoesNotContain("\nhttp://evil.example/b.mp4", stdin);
+            // URI 单独一行（拼接后的畸形值不影响行结构）
+            Assert.Contains("http://cdn.example/a.mp4http://evil.example/b.mp4\n", stdin);
+            // cookie 头单行完整
+            Assert.Contains("  header=Cookie: SESSDATA=abc  all-proxy=http://evil:8080\n", stdin);
+        }
+        finally
+        {
+            Core.Config.ApplyToCurrentAsyncFlow(originalConfig);
+            BBDownAria2c.ProcessRunner = original;
+        }
+    }
 }

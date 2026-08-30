@@ -194,6 +194,19 @@ public partial class BBDownApiServer
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
+                // 无 token 模式（默认回环部署）的 DNS rebinding 防线（RF-15）：浏览器同源
+                // GET 不携带 Origin，写端点的 Origin 校验对读端点不生效——攻击者网页经
+                // rebinding（攻击者域名 → 127.0.0.1）后即可读取 /get-tasks 响应中的
+                // SavePaths 绝对路径等任务数据。仅接受字面回环 Host（localhost/回环 IP），
+                // 不做 DNS 解析（rebinding 正是靠 DNS 答案翻转绕过解析校验）。有 token 时
+                // 认证已全面把关，且非回环合法部署（反代/自定义域名）Host 不在白名单内，
+                // 不强校验。
+                else if (string.IsNullOrEmpty(_serveToken) && !IsLoopbackHost(context.Request.Host.Host))
+                {
+                    Logger.LogWarn($"serve 拒绝非回环 Host 请求（疑似 DNS rebinding）: {SanitizeLogString(context.Request.Host.Value)}");
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return;
+                }
                 bool isWriteApi = path.StartsWithSegments("/add-task")
                     || path.StartsWithSegments("/cancel")
                     || path.StartsWithSegments("/remove-finished");
@@ -578,6 +591,21 @@ public partial class BBDownApiServer
     }
 
     /// <summary>
+    /// 无 token 模式读端点的 Host 白名单（RF-15）：仅接受字面回环 Host
+    /// （localhost / 127.0.0.0/8 / ::1），DNS rebinding 下 Host 是攻击者域名即被拒。
+    /// 刻意不做 DNS 解析——rebinding 靠 DNS 答案翻转绕过解析校验，字面量比对才可靠。
+    /// 空 Host（极老 HTTP/1.0 客户端）一律拒绝：浏览器/HTTP 库均发送 Host。
+    /// internal 供测试直接验证判定逻辑。
+    /// </summary>
+    internal static bool IsLoopbackHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (IPAddress.TryParse(host, out var ip)) return IPAddress.IsLoopback(ip);
+        return false;
+    }
+
+    /// <summary>
     /// /add-task 请求体必须为 JSON：text/plain 是 CORS 简单请求的合法 Content-Type，
     /// 浏览器跨源可"不发预检"直接发出，正是攻击者网页驱动本机 serve 提交任务的载体。
     /// 仅接受 application/json 或 application/*+json；无 Content-Type（空 body 或旧客户端）
@@ -791,6 +819,12 @@ public partial class BBDownApiServer
 
         // Debug 字段若受客户端控制，任务失败时会将服务端完整异常堆栈暴露在 /get-tasks API 中。
         req.Debug = false;
+
+        // Interactive 会让任务阻塞在 Console.ReadLine（SelectTrackManually）：该调用不在
+        // await 点、不可被 CancellationToken 中断，/cancel 无法释放它占用的并发槽——
+        // 少量此类任务即可占满 --max-concurrent 并发闸门直至进程重启；前台运行还会
+        // 直接消费操作者的键盘输入。serve 下强制关闭（与 Debug 同类处理，RF-24）。
+        req.Interactive = false;
 
         // host 字段决定凭据（Cookie/access_token）的发送目标：serve 默认无认证，
         // 若不校验，任意客户端可把请求指向自己的服务器，骗取操作者保存在
@@ -1088,7 +1122,7 @@ public partial class BBDownApiServer
             task.ErrorMessage = cancelMessage;
             task.SetStatus(cancelStatus);
             if (cancelStatus == DownloadTaskStatus.Failed)
-                Logger.LogError($"解析链接失败: {option.Url} - {cancelMessage}");
+                Logger.LogError($"解析链接失败: {SanitizeLogString(option.Url)} - {SanitizeLogString(cancelMessage)}");
             lock (_taskLock)
             {
                 task.CancelCts.Dispose();
@@ -1117,7 +1151,7 @@ public partial class BBDownApiServer
                 finishedTasks.Add(task);
             }
             PersistFinishedTasks();
-            Logger.LogError($"解析链接失败: {option.Url} - {e.Message}");
+            Logger.LogError($"解析链接失败: {SanitizeLogString(option.Url)} - {SanitizeLogString(e.Message)}");
             return;
         }
 

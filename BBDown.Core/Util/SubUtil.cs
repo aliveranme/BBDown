@@ -10,6 +10,14 @@ namespace BBDown.Core.Util;
 
 public static partial class SubUtil
 {
+    /// <summary>
+    /// 构造字幕落盘路径：lan 来自接口响应（B 站/镜像站 EpHost/--insecure 下的中间人，
+    /// 均为项目威胁模型内的外部输入），未净化直接拼路径可借 ..\ 或路径分隔符写出
+    /// 工作目录（RF-18）。标题类文本统一走 GetValidFileName，此处对齐。
+    /// </summary>
+    private static string BuildSubtitlePath(string aid, string cid, string lan, string ext)
+        => PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{PathUtil.GetValidFileName(lan)}.{ext}");
+
     //https://i0.hdslb.com/bfs/subtitle/subtitle_lan.json
     public static (string, string) GetSubtitleCode(string key)
     {
@@ -244,7 +252,7 @@ public static partial class SubUtil
                 {
                     url = url,
                     lan = lan,
-                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}")
+                    path = BuildSubtitlePath(aid, cid, lan, url.Contains(".json") ? "srt" : "ass")
                 };
 
                 subtitles.Add(subtitle);
@@ -283,7 +291,7 @@ public static partial class SubUtil
                 {
                     url = url,
                     lan = lan,
-                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}")
+                    path = BuildSubtitlePath(aid, cid, lan, url.Contains(".json") ? "srt" : "ass")
                 };
 
                 subtitles.Add(subtitle);
@@ -316,8 +324,9 @@ public static partial class SubUtil
                 {
                     url = subtitleUrl,
                     lan = lan,
-                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}.srt")
+                    path = BuildSubtitlePath(aid, cid, lan, "srt")
                 };
+
                 subtitles.Add(subtitle);
             }
 
@@ -340,7 +349,12 @@ public static partial class SubUtil
         try
         {
             List<Subtitle> subtitles = new();
-            string api = $"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&aid={aid}";
+            // 端点名带 wbi：登录态（nav 已取得密钥）下按规范补签名（参数按 key 升序 + wts），
+            // 兼容接口未来收紧；未登录（密钥为空）保持无签名——空 key 的 w_rid 必被 -352 拒绝，
+            // 现状无签名反而可用（RF-26）。
+            string api = !string.IsNullOrEmpty(Config.Current.Wbi)
+                ? $"https://api.bilibili.com/x/player/wbi/v2?{Parser.WbiSign($"aid={aid}&cid={cid}&wts={ServerClock.NowUnixSeconds()}")}"
+                : $"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&aid={aid}";
             string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var infoJson = JsonDocument.Parse(json);
             var subs = infoJson.RootElement.GetPropertySafe("data").GetPropertySafe("subtitle").EnumerateArraySafe("subtitles");
@@ -354,8 +368,9 @@ public static partial class SubUtil
                 {
                     url = subtitleUrl,
                     lan = lan,
-                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}.srt")
+                    path = BuildSubtitlePath(aid, cid, lan, "srt")
                 };
+
                 subtitles.Add(subtitle);
             }
 
@@ -404,7 +419,7 @@ public static partial class SubUtil
                     {
                         url = item.SubtitleUrl,
                         lan = item.Lan,
-                        path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{item.Lan}.srt")
+                        path = BuildSubtitlePath(aid, cid, item.Lan, "srt")
                     }));
             }
 

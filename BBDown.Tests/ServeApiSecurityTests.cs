@@ -127,6 +127,22 @@ public class ServeApiSecurityTests
     }
 
     [Fact]
+    public void IsLoopbackHost_AcceptsOnlyLiteralLoopbackHosts()
+    {
+        // RF-15 无 token 模式读端点的 Host 白名单：仅字面回环（localhost / 127/8 / ::1）
+        Assert.True(BBDownApiServer.IsLoopbackHost("127.0.0.1"));
+        Assert.True(BBDownApiServer.IsLoopbackHost("localhost"));
+        Assert.True(BBDownApiServer.IsLoopbackHost("LOCALHOST")); // 大小写不敏感
+        Assert.True(BBDownApiServer.IsLoopbackHost("127.0.0.2")); // 127/8 全段回环
+        Assert.True(BBDownApiServer.IsLoopbackHost("::1"));
+        // 攻击者 rebinding 域名 / 局域网来源 / 空 Host：拒绝
+        Assert.False(BBDownApiServer.IsLoopbackHost("attacker.example.com"));
+        Assert.False(BBDownApiServer.IsLoopbackHost("192.168.1.10"));
+        Assert.False(BBDownApiServer.IsLoopbackHost(""));
+        Assert.False(BBDownApiServer.IsLoopbackHost(null));
+    }
+
+    [Fact]
     public void IsAuthLockedOut_SlidingWindow_ThresholdReached()
     {
         // 1 分钟窗口内失败次数达到阈值后必须锁死（令暴力枚举失效）；
@@ -239,6 +255,8 @@ public class ServeApiSecurityTests
             // DrmKeyHex/DrmKidHex 会经 mp4decrypt 参与解密，是客户端可控的密钥注入点
             DrmKeyHex = "4141414141414141414141414141414141414141414141414141414141414141",
             DrmKidHex = "42424242424242424242424242424242",
+            // Interactive 会让任务阻塞在 Console.ReadLine：不可取消、占死并发槽（RF-24）
+            Interactive = true,
         };
         BBDownApiServer.SanitizeUntrustedOptions(req);
         Assert.Equal("", req.Aria2cArgs);
@@ -258,6 +276,7 @@ public class ServeApiSecurityTests
         Assert.Equal("", req.MultiFilePattern);
         Assert.Equal("", req.DrmKeyHex);
         Assert.Equal("", req.DrmKidHex);
+        Assert.False(req.Interactive);
     }
 
     [Fact]
