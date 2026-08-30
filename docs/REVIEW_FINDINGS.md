@@ -21,6 +21,22 @@
 | RF-11 | Parser 大会员回退硬编码域名 + 子串判定脆弱 | Medium | EpHost 配置化 + JSON message 解析 | ✅ 已修复（第 11 轮） |
 | RF-12 | `BaseUrlRegex` 贪婪匹配误判 query 为端口 | Low | 正则收紧 | ✅ 已修复（第 11 轮） |
 | RF-13 | 登录轮询跟随重定向缺逐跳校验（凭据外发面） | Low | NoRedirect + 每跳可信校验 | ✅ 已修复（第 11 轮） |
+| RF-14 | 下载管线两级 catch 过滤器缺口（NotSupportedException/AggregateException 逃逸） | Medium | 采纳（改抛 InvalidOperationException + 过滤器补 AggregateException） | ⏳ 待排期 |
+| RF-15 | serve 读端点无 Host 校验（DNS rebinding 读面） | Medium | 采纳（isApi 加 Host 回环白名单） | ⏳ 待排期 |
+| RF-16 | 文档正确性族（wiki 退出码表虚构 2/3、CLI-Reference 缺 4 选项、README serve 列举不完整） | Medium（文档） | 采纳（修正文档） | ⏳ 待排期 |
+| RF-17 | Parser 免二压重发吞用户取消（两处 catch 缺取消守卫） | Low | 采纳（补 OperationCanceledException 重抛守卫） | ⏳ 待排期 |
+| RF-18 | 服务器可控 lan/audio_id 未净化直拼文件路径 + SubOnly ASS 改名 .srt | Low | 采纳（GetValidFileName 净化 + 按源扩展名改名） | ⏳ 待排期 |
+| RF-19 | publishDate/videoDate 占位符 culture 敏感且替换值未净化 | Low | 采纳（InvariantCulture + GetValidFileName） | ⏳ 待排期 |
+| RF-20 | 跳过路径清理一致性残留（锁内 Skipped 漏 coverPath、dash 跳过路径裸删） | Low | 采纳（与 flv 分支对齐） | ⏳ 待排期 |
+| RF-21 | aria2c stdin input-file 换行注入面 | Low | 采纳（写前剔除 \r\n） | ⏳ 待排期 |
+| RF-22 | 进程执行边界（探针未观察管道任务；成功路径 5s 兜底翻转成功） | Low | 部分采纳（探针改异步执行器；成功路径语义先确认） | ⏳ 待排期 |
+| RF-23 | mp4box 输出 `.muxing-{guid}` 未知扩展名兼容性 | Low | 待议（需 GPAC 实测后定） | ⏳ 待议 |
+| RF-24 | SanitizeUntrustedOptions 漏 interactive | Low | 采纳（一行清零） | ⏳ 待排期 |
+| RF-25 | 解析失败日志 option.Url 未单行化（两处） | Low | 采纳（补 SanitizeLogString） | ⏳ 待排期 |
+| RF-26 | Core 解析/网络健壮性低危族（5 小项） | Low | 采纳（随批次逐项落地） | ⏳ 待排期 |
+| RF-27 | FindBinaries 进程级静态工具路径（serve 并发理论面） | Low | 待议（倾向维持现状：Sanitize 已清零路径字段） | ⏳ 待议 |
+| RF-28 | HTTP 响应体无大小上限 | Low | 采纳（逐块读取设总量上限） | ⏳ 待排期 |
+| RF-29 | .editorconfig 存量违规 4 文件（BOM/末尾换行） | Low | 采纳（重存文件；可补轻量检查） | ⏳ 待排期 |
 
 ---
 
@@ -168,6 +184,165 @@
 - **定性**：Low（纵深防御缺口；入口 URL 为硬编码可信 passport 端点，无当前可利用面；原则一致性修复）。
 - **结论**：改用 `NoRedirectClient` 手动逐跳，每跳 Location 在发起下一跳前必须通过 `IsTrustedCookieHost`，上限 `MaxRedirectHops=10`；与现有 `GetWebSourceCoreAsync` 的 5xx 重试/时钟校准语义保持一致。
 - **状态**：✅ 已修复（2026-08-30，第 11 轮）+2 测试（非可信重定向抛错且不访问下一跳 / 可信同主机重定向跟随成功返回 body）。
+
+---
+
+## RF-14：下载管线两级 catch 过滤器缺口（NotSupportedException/AggregateException 逃逸）
+
+- **位置**：`BBDown/Infrastructure/BBDownDownloadUtil.cs:797-801`（抛出点）、`BBDown/Application/Download.cs:1067`（页面级重试过滤器）、`Download.cs:94`（批级失败上报过滤器）。
+- **发现**：多线程下载路径在"服务器以 200 响应多线程 Range 请求"时**刻意抛出** `NotSupportedException`（真实可发生的运行时条件：某 CDN 忽略 Range），`:799-801` 还原样重抛 `ArgumentException`；但页面级与批级两级过滤器白名单均只有 `HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException (or TaskCanceledException)`。`Parallel.ForEachAsync` 多分片同时失败聚合出的 `AggregateException` 同样不在内（`IsSizeArtifactFailure` 在 :914-916 专门处理过它，证明作者知晓其存在）。异常经 `:830/:837` `ExceptionDispatchInfo` 原样重抛，途中不会被包装。
+- **影响**：多 P 批量中一 P 命中即穿透 `DownloadPagesAsync` 的 foreach，剩余分 P 全弃、`NotifyWebhook` 与 `failedPages` 汇总全丢、退出码语义与单 P 失败不一致——与管线精心建立的"单 P 失败隔离"设计矛盾。`EnsureToolAvailable` 的注释（BBDownMuxer.cs:56-59）记录了同构问题（FileNotFoundException 当时正是为此改抛 InvalidOperationException），`NotSupportedException` 是漏网的同族。
+- **结论**：采纳修复，三选一（按侵入度递增）——(a) :797 改抛 `InvalidOperationException`（与 EnsureToolAvailable 同一先例，最小改动）；(b) 扩充两级过滤器加入 `NotSupportedException or ArgumentException or AggregateException`（AggregateException 拆包取首个 InnerException 判断）；(c) 在 MultiThreadDownloadCoreAsync 抛出点统一规范化为页面级白名单类型。建议 (a) + 过滤器补 AggregateException。
+- **状态**：⏳ 待排期（第 12 轮登记，Medium 级已人工逐行核实）。
+
+---
+
+## RF-15：serve 读端点无 Host 校验（DNS rebinding 读面）
+
+- **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:171-216`（中间件：只对写端点校验 Origin，:172 注释明确豁免读端点）、`:238-279`（读端点返回完整快照）、`BBDown/Application/Download.cs:211`（`AddSavePath(savePath)` 存入 `PathUtil.ResolveWorkPath` 解析后的**绝对路径**）。
+- **发现**：默认部署（回环监听、无 token）下，`/get-tasks*` 响应含 SavePaths（服务器绝对文件路径）、标题、URL、错误消息，但无任何 Host 头校验（全仓库无 AllowedHosts 过滤，Kestrel 默认 `AllowedHosts=*`）。攻击者网页经 DNS rebinding（攻击者域名 → 127.0.0.1）后，页面源即 `http://evil.com:23333`，对 `/get-tasks` 的 GET 是"同源"请求——不携带 Origin（fetch 同源 GET 不发 Origin），写端点的 Origin 校验对读端点不生效，且单加 Origin 校验也堵不住。写端点本身无恙：POST 必带 Origin（Fetch 规范非 GET/HEAD 必发），被 `IsLoopbackOrigin` 拦截。
+- **定性**：Medium（信息泄露面真实；前提是用户浏览器访问攻击者页面 + 本机 serve 正在运行，泄露的是文件系统布局与任务元数据，非凭据）。
+- **结论**：在 isApi 分支增加 **Host 头白名单**（`context.Request.Host.Host` 必须解析为回环地址或 localhost，否则 403/404）——curl/脚本直连 127.0.0.1/localhost 不受影响，同时封死 rebinding 的读写两条路；作为纵深也可给读端点加"非回环 Origin 即 403"，或将 `SavePaths` 从无 token 模式的响应中脱敏。
+- **状态**：⏳ 待排期（第 12 轮登记，Medium 级已人工逐行核实）。
+
+---
+
+## RF-16：文档正确性族（wiki 退出码表 / CLI-Reference 缺项 / README 列举不完整）
+
+- **位置**：`docs/wiki/CLI-Reference.md:112-121`（退出码表）、`:1,:27`（自称"完整参数详解/完整参数速查总表"）、`README.md:333`。
+- **发现**（三处）：
+  - 退出码表声称 `2 = Permission Denied（充电专属视频）`、`3 = Tool Missing`，并把"用户主动 Ctrl+C"归入 `0`。但全仓库 `return 2/3;`、`Environment.Exit(2/3)` **零命中**：充电专属无 `--allow-preview` 时走 `Download.cs:489-493` 的 `return false`（跳过分 P，进程正常 0 退出）；工具缺失（FindBinaries 的 FileNotFoundException）走全局 handler 退出 **1**；默认命令 Ctrl+C 返回 **130**（`Program.cs:159-164`），仅 serve/live 等子命令 catch OCE 返回 0。依赖退出码做自动化判断（CI/脚本包装器）的用户会误判。
+  - CLI-Reference 对照 MyOption 65 个选项，反引号精确匹配差集为 `--host`、`--ep-host`、`--tv-host`、`--area`（INTL/TV 端点覆盖选项）4 项缺失；README"核心参数速查"同样缺。
+  - README:333 serve 配置注入说明括号内仅列 `-l`/`--max-concurrent`/`--serve-token`，而 `ServeSettings` 还有 `--trusted-proxy`、`--notify-webhook`（同页 :157-158 表格已列出，前后不一致）。
+- **结论**：采纳修正——(a) 退出码表删除虚构的 2/3 行并改写 Ctrl+C 归属（或实现退出码 2/3，需先定语义）；(b) 补 4 选项行或把标题/总表口径改为"常用参数"；(c) README:333 补全或改"等选项"。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-17：Parser 免二压重发吞用户取消（两处 catch 缺取消守卫）
+
+- **位置**：`BBDown.Core/Parser.cs:324`、`:526`（免二压重新请求的 catch 过滤器）。
+- **发现**：两处 `catch (Exception ex) when (ex is ... or TaskCanceledException)` 无 `!token.IsCancellationRequested` 守卫。`:518-519` 注释断言"真正的用户取消（OperationCanceledException，非 TaskCanceledException）不被过滤器捕获"——**前提是错的**：`HttpClient.SendAsync` 在用户 token 取消时抛的正是 `TaskCanceledException`（OperationCanceledException 的子类）。Ctrl+C / serve 关停落在重发请求窗口会被吞掉、记为"降级沿用第一轮结果"，继续走完解析并产生误导性 Warn。项目既有正确模式（`Download.cs:1159`、`UrlResolver.cs:239`、`FavListFetcher.cs:108`）都是先 `catch (OperationCanceledException) when (token.IsCancellationRequested) throw;` 或在过滤器补 `!token.IsCancellationRequested`，唯独这两处漏了。
+- **结论**：采纳一行修复——两个 catch 前插入取消重抛守卫（或在 TaskCanceledException 分支加 `&& !token.IsCancellationRequested` 语义）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-18：服务器可控 lan/audio_id 未净化直拼文件路径 + SubOnly ASS 改名 .srt
+
+- **位置**：`BBDown.Core/Util/SubUtil.cs:247,286,319,357,407`、`BBDown.Core/Parser.cs:502`、`BBDown/Application/Download.cs:444-445`。
+- **发现**（两处）：
+  - `lan`（`lang_key`）、`audio_id` 全部来自响应体（B 站接口 / 镜像站 EpHost / `--insecure` 下的中间人——后两者正是本项目在其他防御中明确采纳的对抗源），未净化直接进 `PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}...")`；`ResolveWorkPath` 只做 Combine 不过滤（含 `..` 与分隔符原样保留），标题类文本都走了 `GetValidFileName`（InvalidChars 含 `/`、`\`），此处是缺口——恶意 `lang_key` 含 `..\` 可把字幕写出 workDir 之外。
+  - SubOnly 分支无条件 `Path.ChangeExtension(_outSubPath, $".{s.lan}.srt")`：ASS 内容字幕（按 URL 形态落盘为 `.ass`）被改名为 `.srt`，播放器无法渲染。`Download.cs:444` 处 `s.lan` 同样未净化进最终产物路径。
+- **结论**：采纳——对 `lan`/`audio_id` 应用 `PathUtil.GetValidFileName`（或白名单 `[A-Za-z0-9_-]`）后再拼路径；SubOnly 按源文件扩展名决定目标扩展名（`.ass` → `.{lan}.ass`）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-19：publishDate/videoDate 占位符 culture 敏感且替换值未净化
+
+- **位置**：`BBDown/Program.cs:48`（`ToString(format)` 未指定 culture）、`BBDown/Application/PathHelper.cs:67-68`（替换值未过 `GetValidFileName`，对照 :51/:54/:58 的 title/pageTitle/ownerName 都过了）。
+- **发现**：`<publishDate:...>`/`<videoDate:...>` 的自定义格式串是用户输入，格式化用 CurrentCulture（`:` 是"时间分隔符"占位符而非字面字符）：en-US 下 `<publishDate:yyyy-MM-dd HH:mm:ss>` 产出含 `:` 的串直接进 savePath——Windows 上可写入 NTFS 备用数据流（`File.Exists` 为真但资源管理器不可见）；fi-FI 等区域设置下 `:` 被替换为本地分隔符导致跨机器产物路径漂移。格式非法串有 FormatException 兜底，但 `:` 产出的是合法格式化结果，兜不住。
+- **结论**：采纳——`FormatTimeStamp` 加 `CultureInfo.InvariantCulture`（与 RF-5 的 creation_time 收口同构）；对 publishDate/videoDate 的替换值再过一次 `GetValidFileName`。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-20：跳过路径清理一致性残留（锁内 Skipped 漏 coverPath、dash 跳过路径裸删）
+
+- **位置**：`BBDown/Application/Download.cs:208-225`（锁内权威 Skipped 分支）、`:709`（dash 快速跳过删封面）及 `:613,618,637,459,688`（dash 分支其余裸删）。
+- **发现**（两处）：
+  - 锁内 Skipped 分支清理了 videoPath/audioPath/字幕/音频素材/章节并删空 aid 目录，但**漏了 `coverPath`**——两条锁外快速跳过路径（:709、:976）都删封面，唯独这条锁内权威跳过不删 → 每次走此路径 aid 目录残留一张封面、永远非空删不掉。
+  - dash 分支跳过/提前返回路径的多处裸 `File.Delete`/`Directory.Delete` 无 try/catch，而 flv 分支对应位置（:976-977、:939、:962、:988）全部包了 `catch (IOException or UnauthorizedAccessException)`——封面恰被杀软/索引器持有时裸删抛 IOException → 进入页面级重试（过滤器含 IOException）→ 整页（含已存在产物判定）重跑，占用持续则重试耗尽、已完成的分 P 被记为失败。dash 分支是 RF-8 修复族里漏网的一致性问题。
+- **结论**：采纳——锁内 Skipped 分支补 coverPath 清理；dash 分支裸删统一改用 flv 分支同款包裹（或收敛到统一清理函数）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-21：aria2c stdin input-file 换行注入面
+
+- **位置**：`BBDown/Infrastructure/BBDownAria2c.cs:45-50`。
+- **发现**：aria2c `--input-file=-` 语法是"URI 行 + 缩进行为选项行"，而写入 stdin 的 URL（来自 API 响应的 CDN 地址）与 Cookie（操作者配置）未剔除 `\r`/`\n`——包含换行的 URL 可注入任意新指令行（新 URI + `  dir=`/`  all-proxy=` 等）。合法的 `  dir=`/`  out=` 行在注入点之后会对后续 URI 重新生效，实际危害以行为扰动/自 DoS 为主，但注入面真实存在，与项目"参数一律走 ArgumentList/stdin 防注入"的总体思路不符。
+- **结论**：采纳——URL 与 Cookie 写入前剔除 `\r`/`\n`（一行防御，正常输入零影响）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-22：进程执行边界（探针未观察管道任务；成功路径 5s 兜底翻转成功）
+
+- **位置**：`BBDown/Utilities/ExternalToolHelper.cs:26-33`、`BBDown/Infrastructure/ExternalProcessRunner.cs:90-92`。
+- **发现**（两处）：
+  - `CheckFFmpegDOVI` 用 `WaitForExit(5000)` + `outTask.GetAwaiter().GetResult()` 同步探针（RF-2 迁移时的"短进程探针例外"，但杜比视界命中时每 P 最多卡 5 秒）；超时分支 `process.Kill(true); return false;` 直接返回，`outTask`/`errTask` 未被观察——Kill 后管道断裂可能成为 UnobservedTaskException（ExternalProcessRunner/Decrypt 同类问题都做了观察兜底，此处没有）。
+  - `ExternalProcessRunner` 进程成功退出后 `await Task.WhenAll(pipeTasks).WaitAsync(5s)`——子进程若（罕见地）派生继承 stdout 句柄的孙进程，管道 EOF 超过 5 秒即抛 TimeoutException 进 catch 重抛，混流退出码 0 的成功结果被误报为失败。注释表明作者知晓此权衡，但成功路径与失败路径共用同一超时，语义上把"输出句柄未关"等同于"执行失败"。
+- **结论**：探针改用现成 `ExternalProcessRunner.RunAsync`（超时/整树 Kill/管道观察都有现成实现）；成功路径等待超时后若 `p.HasExited && p.ExitCode == 0` 可仅记警告并返回退出码——先确认是否有意再改。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-23：mp4box 输出 `.muxing-{guid}` 未知扩展名兼容性（需实测）
+
+- **位置**：`BBDown/Application/Download.cs:236,240`（混流事务化临时名）、`BBDown/Infrastructure/BBDownMuxer.cs:184`（mp4box 分支把该路径直接作为 `-new` 输出参数）。
+- **发现**：混流事务化把输出统一改为 `savePath + ".muxing-{guid:N}"`。ffmpeg 用 `-f mp4` 强制格式不受影响；但 GPAC 按扩展名推断输出封装格式，`.muxing-xxx` 属未知扩展名——旧版 GPAC（gf_isom_open 直写）无碍，较新的 filter-based MP4Box 行为随版本而异（可能告警回退 mp4，也可能直接失败）。仓库内无针对此的测试或注释；若目标 GPAC 版本严格，则所有 mp4box 路径（`--use-mp4box` 与杜比视界自动切换）都会失败。
+- **结论**：待议——先在装有 GPAC 的环境实测确认；若不兼容，让 mp4box 分支输出到 `Path.ChangeExtension(muxingPath, ".mp4")` 的临时名（保持唯一性）。
+- **状态**：⏳ 待议（第 12 轮登记）。
+
+---
+
+## RF-24：SanitizeUntrustedOptions 漏 interactive（serve 任务阻塞占死并发槽）
+
+- **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:734-805`（SanitizeUntrustedOptions 未清除 `Interactive`）、`BBDown/Application/Display.cs:88`（`Console.ReadLine()`）、`Download.cs:588-591,851-854`（serve 任务流中触发）。
+- **发现**：客户端 POST `/add-task` 携带 `{"interactive":true}`，任务进入下载阶段后 `SelectTrackManually` → `Console.ReadLine` 同步阻塞。该调用不在 await 点、不可被 CancellationToken 中断，`/cancel/{id}` 无法释放它占用的并发槽；`--max-concurrent`（默认 3）个此类任务即可把并发闸门占满直至进程重启。若操作者在终端前台运行 serve，任务还会直接消费操作者的键盘输入。仅持 API 权限的本地客户端可触发（写端点 CSRF 已防护），故 Low。
+- **结论**：采纳一行修复——`SanitizeUntrustedOptions` 中加 `req.Interactive = false;`（与 `req.Debug = false` 同类处理）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-25：解析失败日志 option.Url 未单行化（日志注入残留）
+
+- **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:1091`、`:1120`。
+- **发现**：日志单行化机制已建（`SanitizeLogString`），但仅用于 :312 队列满路径；解析异常路径把客户端完全可控的原始 URL 直接拼进日志（`$"...{option.Url}..."`）。请求体 URL 可含 CR/LF（64KB 限额内），可伪造 `bbdown-api.log` 日志行。
+- **结论**：采纳——两处包一层 `SanitizeLogString(option.Url)`。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-26：Core 解析/网络健壮性低危族（5 小项）
+
+- **位置与发现**：
+  1. `BBDown.Core/Parser.cs:342-372` —— 免二压重发**失败降级**路径下，dash 无 `audio` 键 + 杜比/Hi-Res 存在时，音频在两次 pass 各追加一次且无去重（intl 分支 :229 有 Contains 去重）→ `AudioTracks` 重复条目、下游重复下载/混流。修复：pass 1 降级分支跳过重追加（`reparsePass == 0` 守卫）或补去重。
+  2. `BBDown.Core/AppHelper.cs:284` —— PGC gRPC 请求 `Host` 头硬编码 `grpc.biliapi.net`，实际目标 `app.bilibili.com`（API2），TLS SNI 与 Host 头不一致，依赖基础设施忽略 Host 路由。修复：Host 取目标 URI Authority 或移除让 HttpClient 自动生成。
+  3. `BBDown.Core/Fetcher/FavListFetcher.cs:141-157` —— pn 制收藏夹翻页无"空页/停滞"保护（MediaList/SeriesList/SpaceVideo 都有），受控响应源每页返回 code=0 且 medias 空时把 totalPage 数量的分页请求全部打完（media_count 畸形大时请求洪泛）。修复：页 medias 为空即 break。
+  4. `BBDown.Core/Fetcher/IntlBangumiInfoFetcher.cs:19` —— `.Replace("\\/", "/")` 多余（`\/` 本是合法 JSON 转义，Parse 会正确解码）且可损坏数据（原文 `\\`+`/` 被错误归并）。修复：直接删除。
+  5. `BBDown.Core/Util/SubUtil.cs:343`、`BBDown/Utilities/BBDownUtil.cs:227` —— `x/player/wbi/v2` 端点名带 wbi 却无 `w_rid/wts` 签名，当前 B 站容忍（未记录行为依赖），一旦收紧即静默降级。修复：登录路径下按现有模式补 WbiSign。
+- **结论**：采纳，随批次逐项落地（各项独立、互不依赖）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-27：FindBinaries 写进程级静态工具路径（serve 并发理论面）
+
+- **位置**：`BBDown/Application/Options.cs:151-204`（经 `Workflow.cs:29` serve 下每任务调用）。
+- **发现**：`FindBinaries` 直接写进程级静态 `BBDownMuxer.FFMPEG`/`MP4BOX`/`BBDownAria2c.ARIA2C`，两个并发任务理论上可互相覆盖/静默继承。**但核实实际触发面接近零**：serve 下 `SanitizeUntrustedOptions`（BBDownApiServer.cs:737-740）已清零 `Aria2cPath`/`FFmpegPath`/`Mp4boxPath`，任务无法携带不同路径，并发探测写入的是同一 PATH 探测结果（同值无冲突）；CLI 单进程单 URL 无并发。残余仅"任务 B 静默继承任务 A 探测的路径（同机同 PATH，语义等价）"与冗余探测跳过。
+- **结论**：待议，倾向维持现状；若后续把工具路径纳入 `AppSettings`（与 Config 的 AsyncLocal 方案对齐）可顺路收编，不做预防性单独重构。
+- **状态**：⏳ 待议（第 12 轮登记）。
+
+---
+
+## RF-28：HTTP 响应体无大小上限
+
+- **位置**：`BBDown.Core/Util/HTTPUtil.cs:758`（gRPC `GetPostResponseAsync` 的 `ReadAsByteArrayAsync`）、`:467`（普通响应 `ReadAsStringAsync`）。
+- **发现**：gzip 解压侧已有 48MB 上限（AppHelper.GzipDecompress，B3-S1），但**压缩响应体本身**与普通 GET 响应体（自动解压后）均无上限。被攻破端点或 `--insecure` 中间人可用分块慢发/gzip 炸弹直接打满进程内存——与 B3 已认可的威胁模型一致，只是解压上限没有覆盖到这一层。
+- **结论**：采纳——读取前检查 `Content-Length`/逐块读取并设总量上限（如 64MB），超限抛 `InvalidDataException`。
+- **状态**：⏳ 待排期（第 12 轮登记）。
+
+---
+
+## RF-29：.editorconfig 存量违规 4 文件（BOM/末尾换行，format 门禁不覆盖）
+
+- **位置**：`BBDown.Core/BBDown.Core.csproj`（UTF-8 BOM）、`BBDown.Tests/BBDown.Tests.csproj`（UTF-8 BOM + 无末尾换行）、`.github/workflows/codeql.yml`（无末尾换行）、`.github/dependabot.yml`（无末尾换行）。均已逐字节验证。
+- **发现**：`dotnet format` 不检查 charset BOM 与 `insert_final_newline`，故 pr.yml 的 format 硬门禁拦不住。RF-8~13 涉及的源/测试文件全部干净，此为存量。
+- **结论**：采纳——按 .editorconfig 重存 4 个文件；可选补一个轻量检查（挂 format job 前置步骤）。
+- **状态**：⏳ 待排期（第 12 轮登记）。
 
 ---
 

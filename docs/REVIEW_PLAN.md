@@ -93,7 +93,7 @@
 
 | 项 | 级别 | 位置 | 处理 |
 |----|------|------|------|
-| H1 | High | BBDownApiServer.cs 全文件 | God 类拆 ServeSecurityMiddleware / TaskRouteMapper / TaskFileStore / CallbackGuard；SetUpServer ~200 行 lambda 内联无法单测 |
+| H1 | High | BBDownApiServer.cs 全文件 | God 类拆 ServeSecurityMiddleware / TaskRouteMapper / TaskFileStore / CallbackGuard；SetUpServer ~200 行 lambda 内联无法单测。⚠️ **第 12 轮勘误**：四个拆分文件在 git 全历史中从未存在（零提交记录），功能实际仍集中在本文件（现 1543 行）——本条记录失实，文件结构上 god 类未拆分；功能层面（中间件/持久化/回调防护）已实现并经审查通过 |
 | H2 | High | BBDownMuxer.cs:64,174 | MuxAV 20 参 / MuxByMp4box 15 参改 MuxRequest 参数对象 |
 | H3 | High | BBDownDownloadUtil.cs:28 | RangeDownloadToTmpAsync 10 参 → RangeDownloadRequest + 拆两段 |
 | H4 | High | BBDownDownloadUtil.cs:227,611 | Core 170/200 行嵌套 6-7 层：预检决策方法 + DownloadClipWithRetryAsync；6 个"检查 .tmp/.aria2"块收敛 |
@@ -188,6 +188,35 @@
 | RF-12 | ✅ `BaseUrlRegex` 收紧为 `^https?://[^/:]+:\d+`（query 中 `:数字` 不再误判为端口）；+1 测试 |
 | RF-13 | ✅ `GetWebSourceWithSetCookiesAsync`（登录轮询）改 `NoRedirectClient` 手动逐跳 + 每跳 `IsTrustedCookieHost` 校验（与 gRPC/Widevine 收口同构，凭据与响应 Set-Cookie 不外发非可信主机），上限 `MaxRedirectHops=10`；+2 测试 |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 659/659 全绿（PR gate 过滤器，新增 19 例）；dotnet format --verify-no-changes 通过 |
+
+---
+
+## 第 12 轮：全库完整续审（2026-08-30）
+
+> 四路并行深查（下载管线 / serve 服务 / Core 解析网络层 / 测试与 CI 合规）+ Medium 级发现逐项人工核实。新发现 3 Medium + 16 Low + 若干 Info，**仅登记评估未修复**，全部登记 REVIEW_FINDINGS（RF-14..RF-29）；Info 级观察不登记 RF，见下表末行。
+
+| 项 | 结果 |
+|----|------|
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 659/659 全绿（PR gate 过滤器）；无 Skip 残留（failSkips 在位）；CI 门禁与 AGENTS.md 逐字一致；AOT source-gen JSON 四上下文覆盖完整；RF-1~RF-13 修复质量抽查通过 |
+| RF-14 (M) | 下载管线两级 catch 过滤器缺口：`NotSupportedException`（CDN 忽略 Range，BBDownDownloadUtil.cs:797 刻意抛出）/`ArgumentException`/`AggregateException` 逃逸 Download.cs:94/:1067 白名单 → 整批中止、丢 webhook/failedPages。建议 :797 改抛 InvalidOperationException + 过滤器补 AggregateException |
+| RF-15 (M) | serve 读端点无 Host 校验：默认无 token 部署下 DNS rebinding 可读 `/get-tasks*`（响应含 SavePaths 绝对路径）；写端点因 POST 必带 Origin 已受保护，读端点同源 GET 不发 Origin，须 Host 白名单收口 |
+| RF-16 (M) | 文档正确性族：wiki 退出码表虚构 2/3 且 Ctrl+C 归 0 与实现不符（实况：充电专属跳过→0、工具缺失→1、默认命令 Ctrl+C→130）；CLI-Reference 缺 --host/--ep-host/--tv-host/--area 4 项；README:333 serve 选项列举不完整 |
+| RF-17 | Parser 免二压重发两处 catch（:324/:526）吞用户取消——TaskCanceledException 无 `!token.IsCancellationRequested` 守卫，:518 注释前提错误（SendAsync 用户取消抛的正是 TaskCanceledException） |
+| RF-18 | 服务器可控 lan/audio_id 未净化直拼文件路径（SubUtil 5 处 + Parser:502 + Download:444，ResolveWorkPath 只 Combine 不过滤）；附带 SubOnly 无条件改名 .srt（ASS 内容产物扩展名错误） |
+| RF-19 | publishDate/videoDate 占位符 CurrentCulture 格式化（`:` 占位符）且替换值未过 GetValidFileName（Windows `:` ADS 陷阱/跨机路径漂移）——Program.cs:48 + PathHelper.cs:67-68 |
+| RF-20 | 跳过路径清理一致性残留：锁内权威 Skipped 分支（Download.cs:208-225）漏 coverPath；dash 跳过路径多处裸 File.Delete/Directory.Delete 与 flv 包裹版不一致（RF-8 修复族漏网） |
+| RF-21 | aria2c stdin input-file 的 URL/Cookie 未滤 `\r\n`，可注入 `all-proxy`/`dir`/新 URI 指令行（BBDownAria2c.cs:45-50） |
+| RF-22 | 进程执行边界：CheckFFmpegDOVI 探针同步阻塞 + 超时分支未观察 outTask/errTask（ExternalToolHelper.cs:26-33）；ExternalProcessRunner 成功路径 5s 管道兜底可把退出码 0 翻转为 TimeoutException（:90-92，先确认是否有意） |
+| RF-23 | 混流事务化 `.muxing-{guid}` 未知扩展名直接作为 mp4box `-new` 输出参数，GPAC 按扩展名推断容器，新版行为需实测（Download.cs:236 + BBDownMuxer.cs:184） |
+| RF-24 | SanitizeUntrustedOptions 漏 `interactive` → serve 任务阻塞 Console.ReadLine 占死并发槽且 /cancel 无法中断（一行清零修复） |
+| RF-25 | 解析失败日志两处 option.Url 未过 SanitizeLogString（BBDownApiServer.cs:1091/:1120），客户端可控 CRLF 日志注入残留 |
+| RF-26 | Core 低危族 5 小项：免二压降级音频重复追加（缺去重）、PGC gRPC Host 头与目标不符、FavList 翻页无空页保护、IntlBangumi 多余 `\/` Replace、`x/player/wbi/v2` 两处未签名（未记录行为依赖） |
+| RF-27 | FindBinaries 写进程级静态工具路径——核实 serve 下 SanitizeUntrustedOptions:737-740 已清零路径字段，覆盖场景实际不可达，倾向维持现状（待议） |
+| RF-28 | HTTP 响应体无大小上限（gRPC POST 二进制与普通响应字符串层；gzip 侧 48MB 上限未覆盖本体） |
+| RF-29 | .editorconfig 存量违规 4 文件（两个 csproj BOM、Tests csproj 与两个 github yml 缺末尾换行；format 门禁不检查 BOM/insert_final_newline）——已逐字节验证 |
+| 勘误 R-1 | 第 5 轮 H1 记录失实：ServeSecurityMiddleware/TaskRouteMapper/TaskFileStore/CallbackGuard 四文件在 git 全历史中从未存在，功能仍集中于 BBDownApiServer.cs（1543 行）；已在 H1 行加注 |
+| Info 级观察（不登记 RF） | webhook payload 页数用全量分 P 数非选中数；AddSavePath 无去重（Download.cs:211+1063 重复记录）；serve 响应缺 Cache-Control: no-store / 429 缺 Retry-After；任务持久化 tmp 固定名多实例互踩（SubscriptionStore 已用 GUID tmp 未对齐）；番剧 pub_time 无时区串按本机时区解析；HTTPUtil 重定向超限抛 HttpRequestException（StatusCode=null）命中重试谓词整流程重试；WbiSign 未按规范排序/过滤保留字符（当前可用）；TestPort.Allocate 理论 TOCTOU；Windows 哨兵 0.6s 采样窗口可能漏报进程树未杀；ClockCalibrationTests expected 基准应在调用前取；.dockerignore 未排除 .git/Tests/docs（context 偏大）；sync-wiki.ps1 未查 $LASTEXITCODE、不清理 wiki 旧页面、无 try/finally；根目录 .tmp 已被 gitignore 且未跟踪（无需处理） |
+| 无新发现面 | HttpClient 池隔离（verified/insecure×redirect/no-redirect×media 全独立）、WBI 密钥链、JsonDocument 生命周期、protobuf 帧边界、路径锁机制、LiveStreamUtil 录制循环、webhook SSRF 三重防护、持久化 tmp+flush+rename 原子性、锁序一致性、测试共享状态恢复（try/finally 快照）、Collection 序列化声明闭合、Dockerfile AOT、secrets、proto 生成纪律、serve 参数文档与代码一致性、SECURITY/CONTRIBUTING 完备性 |
 
 ---
 
