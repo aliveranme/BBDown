@@ -279,9 +279,11 @@ static partial class AppHelper
 
     private static Dictionary<string, string> GetHeader(string appkey)
     {
+        // 不设置 Host 头（RF-26）：HttpClient 会按目标 URI 自动设置正确的 Host——
+        // 此前硬编码 grpc.biliapi.net 与番剧 gRPC 目标 app.bilibili.com 不符，
+        // TLS SNI 与 Host 头不一致，依赖基础设施忽略 Host 路由，属潜伏脆弱性。
         return new Dictionary<string, string>()
         {
-            ["Host"] = "grpc.biliapi.net",
             ["user-agent"] = $"Dalvik/{dalvikVer} (Linux; U; Android {osVer}; {brand} {model}) {appVer} os/android model/{brand} mobi_app/android build/{build} channel/{channel} innerVer/{build} osVer/{osVer} network/2 grpc-java-cronet/{cronet}",
             ["te"] = "trailers",
             ["x-bili-fawkes-req-bin"] = GenerateFawkesReqBin(),

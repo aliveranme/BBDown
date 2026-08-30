@@ -16,7 +16,9 @@ public partial class IntlBangumiInfoFetcher : IFetcher
         //string api = $"https://api.global.bilibili.com/intl/gateway/ogv/m/view?ep_id={id}";
         string api = "https://" + (Config.Current.Host == "api.bilibili.com" ? "api.bilibili.tv" : Config.Current.Host) +
                      $"/intl/gateway/v2/ogv/view/app/season?ep_id={id}&platform=android&s_locale=zh_SG&mobi_app=bstar_a" + (Config.Current.Token != "" ? $"&access_key={Config.Current.Token}" : "");
-        string json = (await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken)).Replace("\\/", "/");
+        // 原实现在此 .Replace("\\/", "/")：多余且有害（RF-26）——\/ 本是合法 JSON 转义，
+        // JsonDocument.Parse 会正确解码；预替换会把原文 \\+\/（值为"反斜杠+斜杠"）错误归并丢数据。
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         // 与 BangumiInfoFetcher 一致：顶层 code/message 不能丢弃，区域限制/失效/风控需可诊断。
         long rootCode = infoJson.RootElement.GetInt64Safe("code");

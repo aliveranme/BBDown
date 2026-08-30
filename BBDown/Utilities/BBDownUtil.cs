@@ -224,7 +224,11 @@ public static partial class BBDownUtil
         var points = new List<ViewPoint>();
         try
         {
-            string api = $"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&aid={aid}";
+            // 端点名带 wbi：登录态（nav 已取得密钥）下补 WBI 签名（与 SubUtil 同款收口），
+            // 未登录保持无签名（空 key 的 w_rid 必被 -352 拒绝，现状无签名反而可用）
+            string api = !string.IsNullOrEmpty(Config.Current.Wbi)
+                ? $"https://api.bilibili.com/x/player/wbi/v2?{Parser.WbiSign($"aid={aid}&cid={cid}&wts={ServerClock.NowUnixSeconds()}")}"
+                : $"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&aid={aid}";
             string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var infoJson = JsonDocument.Parse(json);
             if (infoJson.RootElement.TryGetPropertySafe("data")?.TryGetProperty("view_points", out JsonElement vPoint) == true)

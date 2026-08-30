@@ -41,13 +41,15 @@ static class BBDownAria2c
         // Cookie 里含 SESSDATA 等登录凭据，放进命令行会被本机其他用户从进程列表
         // （ps / /proc）直接读到；走 stdin 则既不进 ps 也不落盘。
         // input-file 格式：URI 单独一行，其后缩进行为该 URI 的专属选项。
+        // URL 与 Cookie 都是外部输入（API 响应/用户配置）：换行即 input-file 的指令行
+        // 分隔符，不剥离可注入任意 aria2c 指令行（新 URI/all-proxy/dir 等，RF-21）。
         var input = new StringBuilder();
-        input.Append(url).Append('\n');
+        input.Append(url.Replace("\r", "").Replace("\n", "")).Append('\n');
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
             input.Append("  header=Referer: https://www.bilibili.com\n");
         input.Append($"  header=User-Agent: {HTTPUtil.GetUserAgent(null)}\n");
         if (!string.IsNullOrEmpty(Core.Config.Current.Cookie))
-            input.Append("  header=Cookie: ").Append(Core.Config.Current.Cookie).Append('\n');
+            input.Append("  header=Cookie: ").Append(Core.Config.Current.Cookie.Replace("\r", "").Replace("\n", "")).Append('\n');
         var dir = Path.GetDirectoryName(path);
         input.Append("  dir=").Append(string.IsNullOrEmpty(dir) ? "." : dir).Append('\n');
         input.Append("  out=").Append(Path.GetFileName(path)).Append('\n');

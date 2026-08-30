@@ -220,6 +220,31 @@
 
 ---
 
+## 第 12 轮附：消纳批 RF-14~RF-29（2026-08-30）
+
+> 消纳第 12 轮登记的发现（分支 `fix/review-r12-findings`）。14 项修复落地；RF-23 待议（本机/CI 均无 GPAC 实测环境）、RF-27 维持现状定案。
+
+| 项 | 处理 |
+|----|------|
+| RF-14 | ✅ `MultiThreadDownloadCoreAsync` 抛出点 `NotSupportedException`→`InvalidOperationException`（消息不变），Download.cs 两级 catch 过滤器补 `AggregateException`——"CDN 忽略 Range"不再中止整批/丢 webhook |
+| RF-15 | ✅ 无 token 时 `isApi` 强制 Host 为字面回环（新增 `internal IsLoopbackHost`：localhost/127/8/::1，刻意不做 DNS 解析防 rebinding 绕过）；有 token 时跳过校验保反代/自定义域名部署；+3 端点测试（evil Host 读写 403 / 回环放行 / 带 token 跳过）+1 纯函数测试 |
+| RF-16 | ✅ 文档修正：wiki 退出码表删虚构 2/3 行、Ctrl+C 改"主命令 130 / 子命令 0"、工具缺失归入 1；总表补 `--host`/`--ep-host`/`--tv-host`/`--area`（语义取自 MyOption Description）；README:333 serve 选项列举补 `--trusted-proxy`/`--notify-webhook` |
+| RF-17 | ✅ Parser 免二压两处 catch 前补 `catch (OperationCanceledException) when (token.IsCancellationRequested) throw;`（SendAsync 用户取消抛的正是 TaskCanceledException），并修正 :518 错误注释 |
+| RF-18 | ✅ SubUtil 新增 `BuildSubtitlePath` 统一 5 处 lan 走 `GetValidFileName`；Parser `audio_id` 同款净化；SubOnly 目标扩展名按源内容形态（.ass 保留）+ lan 净化 |
+| RF-19 | ✅ `FormatTimeStamp` 追加 `CultureInfo.InvariantCulture`（与 RF-5 同构）；PathHelper publishDate/videoDate 替换值过 `GetValidFileName`；`FormatSavePath` 改 internal 可测；+1 测试（fi-FI 区域下断言文化无关与 `:` 净化） |
+| RF-20 | ✅ 锁内权威 Skipped 分支补 coverPath 清理；dash 分支裸删全部包裹（封面 1 处、弹幕 XML 3 处、aid 目录 3 处、flv 弹幕 2 处对齐），统一 `catch (IOException or UnauthorizedAccessException)` |
+| RF-21 | ✅ aria2c stdin 的 URL/Cookie 写入前剥离 CR/LF（注入的指令行语义消除，畸形 URI 由退出码校验兜底）；+1 测试（注入 cookie/双 URI 场景断言单行化） |
+| RF-22 | ✅ `CheckFFmpegDOVI` 改真异步 `CheckFFmpegDOVIAsync`（WaitForExitAsync+WaitAsync 5s；超时分支补观察管道任务防 UnobservedTaskException），调用点改 await；ExternalProcessRunner 成功路径 5s 兜底 ⭕ 维持现状（有意设计，注释在位） |
+| RF-24 | ✅ `SanitizeUntrustedOptions` 补 `req.Interactive = false`（阻塞占死并发槽面消除）；既有 ClearsExecutionFields 测试补断言 |
+| RF-25 | ✅ 解析失败日志两处 `option.Url`（及异常消息）过 `SanitizeLogString` |
+| RF-26 | ✅ 5 小项全落地：① 免二压降级 dolby/flac 重复追加——applied 标志守卫 + 新文档接管时重置；② AppHelper GetHeader 移除硬编码 `Host: grpc.biliapi.net`（由 HttpClient 按 URI 生成，番剧 gRPC SNI/Host 不再错位）；③ FavListFetcher 翻页空页 break（对齐其余 fetcher 停滞语义）；④ IntlBangumiInfoFetcher 删除多余 `.Replace("\\/","/")`；⑤ `x/player/wbi/v2` 两处（SubUtil/BBDownUtil）登录态补 WbiSign（aid/cid/wts 升序），未登录保持无签名 |
+| RF-27 | ⭕ 维持现状定案（详见 FINDINGS） |
+| RF-28 | ✅ HTTPUtil 新增 `MaxResponseBodyBytes`（64MB）+ `ReadContentBoundedAsync`（Content-Length 预检 + 逐块累计双拦截）替换 `ReadAsStringAsync`/`ReadAsByteArrayAsync`，`DecodeBodyBytes` 按 charset 解码；+1 判定函数测试（64MB 上限无法廉价构造真实响应） |
+| RF-29 | ✅ 4 文件去 BOM/补末尾换行（BBDown.Core.csproj、BBDown.Tests.csproj、codeql.yml、dependabot.yml） |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 666/666 全绿（+7）；LocalIntegration 3/3；serve Host 校验不破坏既有回环用例 |
+
+---
+
 ## 已完成批次（git log 13766b0..2ab54d1，2026-08）
 
 1. **13766b0** Core 韧性：字幕 TimeoutException 降级（E1）、Widevine 许可证有界重试+超时分类（B2/E2）、重定向 GET 重试（E3）、fetcher code 诊断（E4/E5）、Logger.LogStack（E6）

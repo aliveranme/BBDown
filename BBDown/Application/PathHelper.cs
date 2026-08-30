@@ -25,7 +25,8 @@ internal partial class Program
         return single;
     }
 
-    private static string FormatSavePath(string savePathFormat, string title, Video? videoTrack, Audio? audioTrack, Page p, int pagesCount, string apiType, long pubTime)
+    // internal 供 PathFormatTests 直接验证占位符替换（publishDate 净化等，RF-19）
+    internal static string FormatSavePath(string savePathFormat, string title, Video? videoTrack, Audio? audioTrack, Page p, int pagesCount, string apiType, long pubTime)
     {
         var result = savePathFormat.Replace('\\', '/');
         var regex = InfoRegex();
@@ -64,8 +65,12 @@ internal partial class Program
                 "videoBandwidth" => videoTrack == null ? "" : videoTrack.bandwidth.ToString(),
                 "audioCodecs" => audioTrack == null ? "" : audioTrack.codecs,
                 "audioBandwidth" => audioTrack == null ? "" : audioTrack.bandwidth.ToString(),
-                "publishDate" => FormatTimeStamp(pubTime, defaultDateFormat),
-                "videoDate" => FormatTimeStamp(p.pubTime, defaultDateFormat),
+                // publishDate/videoDate 的自定义格式是用户输入，CultureInfo 决定 `:` 占位符
+                // 的实际输出（RF-19）：替换值再过一次 GetValidFileName——否则 en-US 下
+                // <publishDate:yyyy-MM-dd HH:mm:ss> 产出含 `:` 的路径（Windows 上可写成
+                // NTFS 备用数据流，资源管理器不可见）。videoTitle 等占位符本就走此净化。
+                "publishDate" => BBDownUtil.GetValidFileName(FormatTimeStamp(pubTime, defaultDateFormat)),
+                "videoDate" => BBDownUtil.GetValidFileName(FormatTimeStamp(p.pubTime, defaultDateFormat)),
                 "apiType" => apiType,
                 _ => $"<{key}>"
             };

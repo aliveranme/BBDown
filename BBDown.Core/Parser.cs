@@ -292,6 +292,11 @@ public static partial class Parser
                 if (parsedResult.IsDrm) Logger.LogDebug("DRM detected: type={0}, tech={1}", parsedResult.DrmType, parsedResult.DrmTechType);
 
                 //免二压视频需要重新请求
+                // dolby/flac 追加标记（RF-26）：dash 可能完全没有 audio 键而仅有 dolby/flac 音频，
+                // 此时 pass 0 已把它们追加进 audio；pass 1 重发失败降级（沿用第一轮文档）时
+                // 若不跳过重追加会产生重复音轨。仅当重发的新文档接管（root 换新）时才重置标记重追加。
+                bool dolbyApplied = false;
+                bool flacApplied = false;
                 for (int reparsePass = 0; reparsePass < 2; reparsePass++)
                 {
                     if (reparsePass == 1)
@@ -315,11 +320,22 @@ public static partial class Parser
                                 parsedResult.WebJsonString = reparsePlayJson;
                                 video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
                                 audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
+                                // 新文档的 audio 是全新列表：dolby/flac 需要重新追加
+                                dolbyApplied = false;
+                                flacApplied = false;
                             }
                             else
                             {
                                 newResp.Dispose();
                             }
+                        }
+                        catch (OperationCanceledException) when (token.IsCancellationRequested)
+                        {
+                            // 用户取消（Ctrl+C/serve 关停）必须传播：SendAsync 在用户 token 取消时
+                            // 抛的正是 TaskCanceledException（OperationCanceledException 子类），
+                            // 若被下方过滤器吞掉会被误记为"降级沿用"继续走完解析（RF-17，
+                            // 原 :518 注释"真正的用户取消是 OperationCanceledException"的前提有误）。
+                            throw;
                         }
                         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException or TaskCanceledException)
                         {
@@ -341,12 +357,13 @@ public static partial class Parser
                     //处理杜比音频
                     try
                     {
-                        if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
+                        if (!dolbyApplied && !tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
                         {
                             if (dolby.TryGetProperty("audio", out JsonElement db))
                             {
                                 audio ??= new List<JsonElement>();
                                 audio.AddRange(db.EnumerateArray());
+                                dolbyApplied = true;
                             }
                         }
                     }
@@ -356,7 +373,7 @@ public static partial class Parser
                     //处理Hi-Res无损
                     try
                     {
-                        if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
+                        if (!flacApplied && !tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
                         {
                             if (hiRes.TryGetProperty("audio", out JsonElement db))
                             {
@@ -364,6 +381,7 @@ public static partial class Parser
                                 {
                                     audio ??= new List<JsonElement>();
                                     audio.Add(db);
+                                    flacApplied = true;
                                 }
                             }
                         }
@@ -499,7 +517,8 @@ public static partial class Parser
                         {
                             title = role.GetValueAsStringSafe("title"),
                             personName = role.GetValueAsStringSafe("person_name"),
-                            path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{role.GetValueAsStringSafe("audio_id")}.m4a"),
+                            // audio_id 来自接口响应（外部输入）：净化后再拼路径，防 ..\/ 分隔符写出工作目录（RF-18，与 SubUtil lan 同款收口）
+                            path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{PathUtil.GetValidFileName(role.GetValueAsStringSafe("audio_id"))}.m4a"),
                             audio = roleAudioTracks
                         });
                     }
@@ -515,13 +534,18 @@ public static partial class Parser
                 var firstRoot = root;
                 // 重发可能抛网络/超时/解析异常（dash 分支同款过滤器）：重发失败但
                 // 首次响应已通过业务校验且完全可用，沿用首次响应降级，不把整个解析拖垮。
-                // 真正的用户取消（OperationCanceledException，非 TaskCanceledException）
-                // 不被过滤器捕获，向上传播走取消路径。
+                // 用户取消（Ctrl+C/serve 关停）不被过滤器捕获（SendAsync 用户取消抛的
+                // 正是 TaskCanceledException，须在下方先行重抛），向上传播走取消路径。
                 JsonDocument? retriedResp = null;
                 try
                 {
                     parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
                     retriedResp = JsonDocument.Parse(parsedResult.WebJsonString);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // 同 dash 分支（RF-17）：真正的用户取消须传播，不能被记为"沿用首次结果"。
+                    throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException or TaskCanceledException)
                 {

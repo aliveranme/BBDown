@@ -31,6 +31,10 @@ BBDown [选项] <URL或标识符>
 | `-t` | `--use-tv-api` | `bool (false)` | 使用 TV 端解析接口（通常无台标水印） |
 | `-a` | `--use-app-api` | `bool (false)` | 使用移动端 APP 解析接口 |
 | | `--use-intl-api` | `bool (false)` | 使用国际版（东南亚/泰国等）解析接口 |
+| | `--host` | `string ("api.bilibili.com")` | 指定 BiliPlus 镜像站主机（UGC web 接口） |
+| | `--ep-host` | `string ("api.bilibili.com")` | 指定 BiliPlus 镜像站 EP 主机（番剧 web 接口） |
+| | `--tv-host` | `string ("api.snm0516.aisee.tv")` | 自定义 TV 端接口请求 Host |
+| | `--area` | `string ("")` | 使用 BiliPlus 时必选，指定区域（`hk` / `tw` / `th`） |
 | `-I` | `--only-show-info` | `bool (false)` | 仅解析并展示媒体流与分 P 信息，不下载 |
 | `-i` | `--interactive` | `bool (false)` | 交互式命令行菜单挑选清晰度与音视频流 |
 | | `--show-all` | `bool (false)` | 展示所有分 P 标题与元数据 |
@@ -111,14 +115,13 @@ BBDown [选项] <URL或标识符>
 
 ## 4. 进程系统退出码 (Exit Codes)
 
-BBDown 在执行退出时会返回标准的操作系统退出码：
+BBDown 在执行退出时返回以下操作系统退出码：
 
 | 退出码 | 状态描述 | 触发场景 |
 | :---: | :--- | :--- |
-| `0` | **Success (成功)** | 正常完成解析/下载/混流；或用户主动按 `Ctrl+C` 取消 |
-| `1` | **General Error (常规错误)** | URL 无效、解析异常、网络连续重试失败、接口返回 404/风控 |
-| `2` | **Permission Denied (权限受限)** | 充电专属视频（未加 `--allow-preview`）；或账号无观看权限 |
-| `3` | **Tool Missing (工具缺失)** | 混流阶段未在系统或指定路径找到 FFmpeg / MP4Box |
+| `0` | **Success (成功)** | 正常完成解析/下载/混流；`serve` / `live` 等子命令在用户取消或收到关停信号时也返回 `0` |
+| `1` | **General Error (常规错误)** | URL 无效、解析异常、网络连续重试失败、接口返回 404/风控、找不到 FFmpeg / MP4Box 等外部工具 |
+| `130` | **Interrupted (SIGINT 中断)** | 主下载命令（默认命令）运行中用户按 `Ctrl+C` 取消 |
 
 ---
 

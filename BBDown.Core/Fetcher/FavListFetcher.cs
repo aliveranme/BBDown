@@ -153,6 +153,15 @@ public class FavListFetcher : IFetcher
             {
                 throw new InvalidOperationException($"获取收藏夹第 {page} 页失败: 响应数据为空");
             }
+            // 空页保护（RF-26）：totalPage 由接口声称的 media_count 推算，受控/畸形响应源
+            // 可让每页返回 code=0 且 medias 为空/缺失——不中断会把 totalPage 数量的分页
+            // 请求全部打完（请求洪泛）。与 MediaListFetcher/SeriesListFetcher/SpaceVideoFetcher
+            // 的游标停滞中断语义对齐（首个空页即止，LogWarn 说明）。
+            if (!pageData.TryGetProperty("medias", out var mediasElem) || mediasElem.ValueKind != JsonValueKind.Array || !mediasElem.EnumerateArray().Any())
+            {
+                Logger.LogWarn($"收藏夹第 {page} 页无任何稿件，提前结束翻页（media_count 可能与实际不符）");
+                break;
+            }
             await ProcessPageAsync(pageData);
         }
 

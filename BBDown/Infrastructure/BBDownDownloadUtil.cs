@@ -793,8 +793,11 @@ internal static class BBDownDownloadUtil
                         }
                         catch (NotSupportedException)
                         {
-                            // 服务器不支持 Range（确定性不可重试）：与单线程路径一致直接抛出，不做无意义退避重试
-                            throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
+                            // 服务器不支持 Range（确定性不可重试）：与单线程路径一致直接抛出，不做无意义退避重试。
+                            // 规范化为 InvalidOperationException 而非原样抛 NotSupportedException（RF-14）：
+                            // 页面级/批级两级 catch 过滤器白名单只含 InvalidOperationException， NotSupportedException
+                            // 会穿透两级过滤器中止整批下载（丢 webhook/failedPages），与"单 P 失败隔离"设计矛盾。
+                            throw new InvalidOperationException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
                         }
                         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
                         {

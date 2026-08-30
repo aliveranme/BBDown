@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 
 namespace BBDown.Tests;
@@ -200,6 +201,63 @@ public class ServeApiHttpTests
 
         var after = await GetFinishedTasksAsync(server.Client);
         Assert.Empty(after);
+    }
+
+    /// <summary>
+    /// 无 token 模式（默认回环部署）的 DNS rebinding 防线（RF-15）：Host 头为
+    /// 非回环字面量（攻击者 rebinding 域名）一律 403，读端点同源 GET 不携带 Origin
+    /// 无法靠 Origin 校验保护，必须在 Host 层拦截。
+    /// </summary>
+    [Fact]
+    public async Task HostValidation_WithoutToken_RejectsNonLoopbackHost()
+    {
+        using var server = new RunningServer();
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/get-tasks/");
+        req.Headers.Host = "attacker.example.com";
+        using var resp = await server.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+
+        // 写端点同样受 Host 白名单约束（rebinding 的 POST 同样被拒）
+        using var postReq = new HttpRequestMessage(HttpMethod.Post, "/add-task")
+        {
+            Content = new StringContent("""{"url":"av123"}""", Encoding.UTF8, "application/json")
+        };
+        postReq.Headers.Host = "attacker.example.com";
+        using var postResp = await server.Client.SendAsync(postReq);
+        Assert.Equal(HttpStatusCode.Forbidden, postResp.StatusCode);
+    }
+
+    /// <summary>回环字面量 Host（127.0.0.1/localhost）不受影响，本地脚本/管理页正常查询。</summary>
+    [Fact]
+    public async Task HostValidation_WithoutToken_AcceptsLoopbackHosts()
+    {
+        using var server = new RunningServer();
+
+        foreach (var host in new[] { "127.0.0.1", "localhost", "127.0.0.2", "[::1]" })
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/get-tasks/");
+            req.Headers.Host = host;
+            using var resp = await server.Client.SendAsync(req);
+            Assert.True(resp.StatusCode == HttpStatusCode.OK,
+                $"回环 Host {host} 应放行，实际 {(int)resp.StatusCode}");
+        }
+    }
+
+    /// <summary>
+    /// 有 token 时 Host 不强校验：非回环合法部署（反代/自定义域名）的 Host 不在回环
+    /// 白名单内，认证已全面把关，不得破坏该部署形态。
+    /// </summary>
+    [Fact]
+    public async Task HostValidation_WithToken_SkipsHostCheck()
+    {
+        using var server = new RunningServer(withToken: true);
+        server.Client.DefaultRequestHeaders.Add("X-Serve-Token", "test-token");
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/get-tasks/");
+        req.Headers.Host = "bbdown.internal.example";
+        using var resp = await server.Client.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     [Fact]

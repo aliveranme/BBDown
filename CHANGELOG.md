@@ -6,6 +6,11 @@
 
 ### 修复
 
+- **多线程下载遇不支持 Range 的服务器时整批中止**：多线程分片路径在服务器以 200 响应 Range 请求时抛出的 `NotSupportedException`（及其它白名单外异常）会穿透页面级与批级两级 catch 过滤器，导致多 P 批量中一 P 命中即放弃剩余分 P、丢失完成通知与失败汇总。现抛出点规范化为 `InvalidOperationException` 并将过滤器补齐 `AggregateException`。
+- **SubOnly 模式 ASS 字幕产物扩展名错误**：ASS 内容字幕被无条件改名为 `.srt`，播放器无法渲染。现按源字幕内容形态决定目标扩展名。
+- **`<publishDate:...>`/`<videoDate:...>` 占位符在特定区域设置下产出非法文件名**：自定义日期格式的 `:` 是时间分隔符占位符，fi-FI 等区域下输出形如 `22.13`，en-US 下输出含 `:`（Windows 上可写入 NTFS 备用数据流，资源管理器不可见）。现固定 InvariantCulture 格式化并对替换值做文件名净化（与 ffmpeg `creation_time` 的收口同构）。
+- **重跑已下载视频时封面/装饰文件残留**：混流锁内权威跳过分支漏删封面文件（每次残留一张且 aid 目录永远非空）；DASH 分支跳过路径的多处裸 `File.Delete`/`Directory.Delete` 在文件恰被杀软/索引器持有时抛 IOException，把"已下载成功"翻成整页失败重试。现已与 FLV 分支对齐统一包裹清理。
+- **serve 交互式选项导致任务不可取消地占死并发槽**：客户端经 API 提交 `{"interactive":true}` 会让任务阻塞在 `Console.ReadLine`——不可被取消中断，少量任务即可占满 `--max-concurrent` 直至进程重启。现 serve 下强制关闭交互式模式。
 - **特定区域设置下视频发布时间元数据丢失**：ffmpeg `creation_time` 时间戳的自定义格式未固定文化，`:` 在 fi-FI 等区域设置下被解析为时间分隔符占位符（产出形如 `19.30.00` 的非 ISO-8601 串），`av_parse_time` 解析失败后元数据静默丢失。现追加 `CultureInfo.InvariantCulture`。
 - **杜比视界自动切 mp4box 时封面静默丢失**：`-itags` 的 `cover` 值（本地封面路径）未按 mp4box itags 值转义规则处理，Windows 路径中的 `\` 被当转义序列消费。现与同函数其它 itags 值一致走 `EscapeString`。
 - **配置文件 URL 被 URL 形值的命令行选项误压制**：`BBDown.config` 中写了下载 URL、命令行又恰好携带值形似 URL 的选项（如 `--aria2c-proxy http://127.0.0.1:7890`、`--work-dir av123`）时，配置里的 URL 被误判"命令行已给出"而丢弃，Spectre 报缺少必填参数。现仅对位置参数应用 URL 启发式（选项值不再参与判定）。
@@ -16,17 +21,25 @@
 
 ### 改进
 
+- **进程与解析层健壮性**：直播杜比视界的 ffmpeg 版本探测改真异步（不再在下载链路同步阻塞最多 5 秒，超时后补观察管道任务）；用户取消（Ctrl+C/关停）不再被解析层"免二压重发"降级路径吞掉；免二压降级路径下杜比/Hi-Res 音轨不再重复追加；番剧 gRPC 移除与目标主机不符的硬编码 Host 头；收藏夹翻页遇空页提前结束（防畸形 media_count 触发请求洪泛）；国际版番剧接口删除多余的双重转义替换。
+- **文档修正**：wiki 退出码表删除虚构的 `2`/`3` 退出码并修正 Ctrl+C 归属（主命令实际返回 130、子命令 0、工具缺失归 1）；参数总表补 `--host`/`--ep-host`/`--tv-host`/`--area`；README serve 配置注入说明补全选项列举。
 - **CLI 命令层全量迁移 `AsyncCommand`**：`login`/`logintv`/`article`/`live`/`sub check`/`watchlater`/`serve` 7 个命令不再以 `Task.Run + GetAwaiter().GetResult()` 阻塞线程池线程等待异步操作（serve 长驻进程此前整个生命周期额外占用 1 个阻塞线程）；serve 链路改为真异步（`RunAsync`/`StartServerAsync`），监听地址前置校验独立为 `ValidateListenUrl`。各命令退出码与错误语义不变。
 
 ### 安全性
 
+- **serve 无 token 模式 DNS rebinding 防线**：浏览器同源 GET 不携带 Origin，写端点的 Origin 校验保护不到读端点——攻击者网页经 rebinding（攻击者域名解析到 127.0.0.1）可读取 `/get-tasks*` 响应中的任务数据（含服务器绝对路径）。现无 token 时强制 Host 头为字面回环（localhost/127.0.0.0/8/::1，不做 DNS 解析），携带 token 的反代/自定义域名部署不受影响。
+- **aria2c 输入换行注入面收口**：aria2c input-file 语法中换行即指令行分隔符，来自 API 响应的 URL 与用户配置的 Cookie 未剥离 CR/LF 时可注入任意 aria2c 指令行（新 URI/`all-proxy`/`dir` 等）。现写入 stdin 前剥离换行。
+- **服务器可控文本不再直拼文件路径**：字幕语言代码（`lan`）、音频 ID（`audio_id`）来自接口响应（镜像站/`--insecure` 属项目威胁模型内的对抗源），含 `..\` 时可写出工作目录。现统一经 `GetValidFileName` 净化后再拼路径。
+- **HTTP 响应体大小上限**：gzip 解压侧已有 48MB 上限，但压缩响应体本体与普通响应体无上限，被攻破端点或 `--insecure` 中间人可用巨包/分块慢发响应耗尽进程内存。现统一 64MB 上限（Content-Length 预检 + 逐块累计双拦截）。
+- **serve 日志注入残留收口**：解析失败日志两处原始 `option.Url` 未单行化，客户端可借请求体 URL 中的 CR/LF 伪造日志行。现统一过 `SanitizeLogString`。
 - **Widevine 许可证请求禁跟随重定向**：许可证 POST 的请求体是设备私钥签名的 challenge，原 `VerifiedAppHttpClient`（允许自动重定向）会在 307/308 上连同 body 重放到跨主机目标。新增 `VerifiedNoRedirectClient`（始终校验证书 + 禁自动重定向，独立连接池不受 `--insecure` 降级），3xx 显式报错不跟随（与 gRPC POST 的凭据收口同构）。
 - **serve 认证失败限速字典有界裁剪**：防止攻击者使用大量独立 IP 或伪造 XFF 标头导致限速记录字典无界增长，在超过上限 `MaxTrackedAuthFailureIps` 时按最后失败时间自动裁剪，保留最近活跃记录。
 - **登录轮询跟随重定向逐跳可信主机校验**：`GetWebSourceWithSetCookiesAsync` 切换为禁自动跳转客户端手动逐跳，每跳发起前校验 `IsTrustedCookieHost`，防止重定向将用户凭证及下发的 `Set-Cookie` 泄露至不可信主机。
 
 ### 测试增强
 
-- 全库测试 659 例（新增 25 例）：VerifiedNoRedirectClient 身份稳定性、GET/POST 307 不跟随、配置合并 URL 形值选项回归、章节前缀清理、认证字典限速有界裁剪、已完成任务溢出按创建时间排序、大会员 JSON message 字段解析、BaseUrlRegex 严格匹配、登录轮询逐跳重定向安全拦截与合法跟随等。
+- 全库测试 666 例（新增 7 例）：serve Host 白名单端点行为（evil Host 403/回环放行/带 token 跳过校验）与纯函数判定、aria2c stdin 单行化、日期占位符文化无关与路径净化（fi-FI 区域下断言）、HTTP 响应体上限判定、serve Interactive 清零等。
+- 此前批次（659 例，新增 25 例）：VerifiedNoRedirectClient 身份稳定性、GET/POST 307 不跟随、配置合并 URL 形值选项回归、章节前缀清理、认证字典限速有界裁剪、已完成任务溢出按创建时间排序、大会员 JSON message 字段解析、BaseUrlRegex 严格匹配、登录轮询逐跳重定向安全拦截与合法跟随等。
 
 ## [1.6.16] - 2026-08-19
 

@@ -91,7 +91,7 @@ internal partial class Program
                 succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
                     downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException)
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException)
             {
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
@@ -220,8 +220,12 @@ internal partial class Program
             var aidDir = PathUtil.ResolveWorkPath(p.aid);
             if (Directory.Exists(aidDir) && !Directory.EnumerateFileSystemEntries(aidDir).Any())
             {
-                try { Directory.Delete(aidDir, true); } catch { }
+                try { Directory.Delete(aidDir, true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
+            // 锁内权威跳过同样清理封面（RF-20）：此前漏删 coverPath，每次走此路径
+            // 都在 aid 目录残留一张封面且目录永远非空删不掉（两条锁外快速跳过路径都删）。
+            try { if (File.Exists(coverPath)) File.Delete(coverPath); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             return MuxOutcome.Skipped;
         }
         // 混流产物事务化：ffmpeg/mp4box 写入唯一的 .muxing-{guid} 临时路径而非最终 savePath。
@@ -441,7 +445,11 @@ internal partial class Program
                                     var dir = Path.GetDirectoryName(_outSubPath);
                                     if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                                         Directory.CreateDirectory(dir);
-                                    _outSubPath = Path.ChangeExtension(_outSubPath, $".{s.lan}.srt");
+                                    // 目标扩展名按源内容形态决定（RF-18）：JSON 字幕被转换为 SRT 内容，
+                                    // ASS 字幕原样落盘——此前无条件改名 .srt 会产出"ASS 内容 + .srt 扩展名"
+                                    // 的无法渲染文件。lan 同样净化（服务器可控，与 SubUtil 同款收口）。
+                                    var subExt = Path.GetExtension(s.path).Equals(".ass", StringComparison.OrdinalIgnoreCase) ? "ass" : "srt";
+                                    _outSubPath = Path.ChangeExtension(_outSubPath, $".{PathUtil.GetValidFileName(s.lan)}.{subExt}");
                                     File.Move(s.path, _outSubPath, true);
                                     // 记录最终产物：SubOnly 提前返回不经过下方统一 AddSavePath，
                                     // 若这里不记录，serve API 的成功响应里产物列表会缺字幕文件。
@@ -456,7 +464,8 @@ internal partial class Program
 
                         if (myOption.SubOnly)
                         {
-                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             // SubOnly 但没有任何字幕生成（视频无字幕/全部跳过）→ 零产物成功。
                             // 必须返回 false，避免 CLI 报成功、serve 标记 Succeeded、SavePaths 为空。
                             if (!anyProductProduced)
@@ -610,12 +619,12 @@ internal partial class Program
                             if (danmakus == null)
                             {
                                 Logger.Log("弹幕Xml解析失败, 删除Xml...");
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             else if (danmakus.Length == 0)
                             {
                                 Logger.Log("当前视频没有弹幕, 删除Xml...");
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
                             {
@@ -634,7 +643,7 @@ internal partial class Program
                             // delete xml if possible
                             if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
                             {
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
 
                             if (myOption.DanmakuOnly)
@@ -685,7 +694,8 @@ internal partial class Program
                             }
                             var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
                             await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
-                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             relatedTask?.AddSavePath(newCoverPath);
                             return true;
                         }
@@ -706,7 +716,11 @@ internal partial class Program
                         {
                             Logger.Log($"{savePath}已存在, 跳过下载...");
                             relatedTask?.AddSavePath(savePath);
-                            File.Delete(coverPath);
+                            // 与 flv 分支对齐（RF-20）：封面/弹幕 XML 是本任务刚写完的文件，
+                            // 恰被杀软扫描/索引器持有时裸删抛 IOException 会进入页面级重试，
+                            // 把"已下载成功"翻成失败重跑——瞬时占用只应静默跳过清理。
+                            try { if (File.Exists(coverPath)) File.Delete(coverPath); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             // 清理本次已下载但未被消费的装饰性文件（字幕/章节）：它们下载于
                             // 跳过判定之前（GetSubtitlesAsync 在提取轨道前执行），若不清理，
                             // 每次重跑已下载的视频都会残留字幕/章节文件，且 Directory 非空
@@ -719,7 +733,7 @@ internal partial class Program
                             DeleteResidualChapterFiles(PathUtil.ResolveWorkPath(p.aid));
                             if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                             {
-                                Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             return true;
                         }
@@ -727,7 +741,7 @@ internal partial class Program
                         if (selectedVideo != null)
                         {
                             //杜比视界, 若ffmpeg版本小于5.0, 使用mp4box封装
-                            if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !ExternalToolHelper.CheckFFmpegDOVI())
+                            if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !await ExternalToolHelper.CheckFFmpegDOVIAsync())
                             {
                                 Logger.LogWarn($"检测到杜比视界清晰度且您的ffmpeg版本小于5.0,将使用mp4box混流...");
                                 myOption.UseMP4box = true;
@@ -893,12 +907,12 @@ internal partial class Program
                             if (danmakus == null)
                             {
                                 Logger.Log("弹幕Xml解析失败, 删除Xml...");
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             else if (danmakus.Length == 0)
                             {
                                 Logger.Log("当前视频没有弹幕, 删除Xml...");
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
                             {
@@ -917,7 +931,7 @@ internal partial class Program
                             // delete xml if possible
                             if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
                             {
-                                File.Delete(danmakuXmlPath);
+                                try { File.Delete(danmakuXmlPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
 
                             if (myOption.DanmakuOnly)
@@ -1064,7 +1078,7 @@ internal partial class Program
                     }
                     return true; // success, exit retry loop
                 }
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or AggregateException
                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
                     // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与
