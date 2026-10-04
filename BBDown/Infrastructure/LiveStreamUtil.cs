@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 using BBDown.Core;
@@ -13,8 +14,6 @@ public static class LiveStreamUtil
 {
     /// <summary>直播头阶段（预检/取流地址）超时。</summary>
     private static readonly TimeSpan HeaderStageTimeout = TimeSpan.FromMinutes(2);
-    /// <summary>录制产物完整性下限：输入总字节的 80%。</summary>
-    private const double MinCompleteStreamRatio = 0.8;
     /// <summary>重连退避基数与上限（退避 = 基数 × 2^n，封顶）。</summary>
     private const int ReconnectBackoffBaseMs = 3000;
     private const int ReconnectBackoffCapMs = 30_000;
@@ -370,10 +369,17 @@ public static class LiveStreamUtil
         }
         catch (Exception)
         {
-            // 发生终结态异常（LiveStreamUnavailableException / LiveStreamWriteException）或未捕获异常退出时：
-            // 若尚未录入任何有效分段，清理本次创建的空会话目录与根目录，避免在磁盘留下空残留。
-            if (total == 0 || segmentFiles.Count == 0)
-                CleanupSessionDir(segDir, segRoot);
+            // 写入/进度回调可能在 StreamToFileAsync 返回前抛错：此时分段已有数据，
+            // 但尚未加入 segmentFiles 或 total。只在会话目录为空时清理，
+            // 否则告知用户恢复文件的位置。
+            try
+            {
+                if (Directory.EnumerateFileSystemEntries(segDir).Any())
+                    Logger.LogWarn($"直播录制异常退出，已写入分段保留在: {segDir}");
+                else if (total == 0 || segmentFiles.Count == 0)
+                    CleanupSessionDir(segDir, segRoot);
+            }
+            catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex)) { }
             throw;
         }
 
@@ -389,7 +395,18 @@ public static class LiveStreamUtil
         // 跳过它继续。合成/改名前把所有分段裁到最后一个完整标签，否则断流重连的
         // 录制几乎必然合成失败。损失仅限截断的半截标签（无法播放的垃圾字节）。
         foreach (var seg in segmentFiles)
+        {
             TrimFlvTail(seg);
+        }
+
+        // 单段也要验证 FLV 结构及媒体包：仅凭 >=13 字节不能证明是直播内容，
+        // 否则 CDN 返回的较长错误页会直接覆盖同名旧录制。
+        if (segmentFiles.Count == 1 &&
+            (!TryCountFlvMediaPackets(segmentFiles[0], out var singleSegment) || singleSegment.Total == 0))
+        {
+            Logger.LogWarn($"直播分段不是完整的 FLV 媒体文件，已保留在 {segDir}");
+            return LiveRecordResult.ConcatFailedWithSegmentsSaved;
+        }
 
         // 多段 → FFmpeg concat 合成最终文件；单段直接改名。
         if (segmentFiles.Count == 1)
@@ -417,14 +434,17 @@ public static class LiveStreamUtil
             try
             {
                 concatOk = await ConcatSegmentsAsync(segmentFiles, tempOutPath, finalizeCts.Token);
-                if (concatOk && File.Exists(tempOutPath))
-                {
+                if (concatOk)
                     File.Move(tempOutPath, path, true);
-                }
+            }
+            catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex))
+            {
+                concatOk = false;
+                Logger.LogWarn($"保存直播合成文件失败: {ex.Message}；已保留分段在 {segDir}");
             }
             finally
             {
-                try { if (File.Exists(tempOutPath)) File.Delete(tempOutPath); } catch (IOException) { }
+                try { if (File.Exists(tempOutPath)) File.Delete(tempOutPath); } catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex)) { }
             }
 
             if (!concatOk)
@@ -479,6 +499,29 @@ public static class LiveStreamUtil
         }
     }
 
+    private static bool TryReadFlvHeader(FileStream file, out long firstTagOffset)
+    {
+        firstTagOffset = 0;
+        file.Position = 0;
+        Span<byte> header = stackalloc byte[9];
+        if (file.ReadAtLeast(header, header.Length, throwOnEndOfStream: false) != header.Length ||
+            !header[..3].SequenceEqual("FLV"u8) || header[3] != 1 || (header[4] & ~0x05) != 0)
+            return false;
+
+        long dataOffset = BinaryPrimitives.ReadUInt32BigEndian(header[5..9]);
+        if (dataOffset < header.Length || file.Length < 4 || dataOffset > file.Length - 4)
+            return false;
+
+        file.Position = dataOffset;
+        Span<byte> previousSize = stackalloc byte[4];
+        if (file.ReadAtLeast(previousSize, previousSize.Length, throwOnEndOfStream: false) != previousSize.Length ||
+            BinaryPrimitives.ReadUInt32BigEndian(previousSize) != 0)
+            return false;
+
+        firstTagOffset = dataOffset + previousSize.Length;
+        return true;
+    }
+
     /// <summary>
     /// 把 FLV 文件末尾的截断标签裁掉。网络中断/用户取消时段尾可能只有半个标签
     /// （标签头声明了 N 字节负载但文件提前结束）——ffmpeg concat demuxer 遇到截断
@@ -488,29 +531,51 @@ public static class LiveStreamUtil
     /// </summary>
     internal static bool TrimFlvTail(string path)
     {
-        // FLV 标签类型：0x08 音频 / 0x09 视频 / 0x12 脚本(元数据) / 0x16-0x18 Enhanced FLV 扩展
+        // FLV 标签类型：0x08 音频 / 0x09 视频 / 0x12 脚本(元数据)。
         // 掩码 0x1F 过滤高位 Filter 标志（Adobe FLV 标准：Bit 5 标识是否需要预处理/加密）
-        static bool IsTagType(int t) => (t & 0x1F) is 0x08 or 0x09 or 0x12 or 0x16 or 0x17 or 0x18;
+        static bool IsTagType(int t) => (t & 0x1F) is 0x08 or 0x09 or 0x12;
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
             long len = fs.Length;
-            // 标准 FLV 头 9 字节，其后是 4 字节 PreviousTagSize0（恒 0），首个标签从 13 开始
-            long pos = 13;
-            long lastGoodEnd = 13;
+            if (!TryReadFlvHeader(fs, out var firstTagOffset)) return false;
+            long pos = firstTagOffset;
+            long lastGoodEnd = firstTagOffset;
+            bool truncatedTag = false;
             Span<byte> head = stackalloc byte[4];
-            while (pos + 11 <= len)
+            Span<byte> previousSize = stackalloc byte[4];
+            while (pos < len)
             {
                 fs.Position = pos;
-                if (fs.Read(head) != 4) break;
-                if (!IsTagType(head[0])) break; // 数据流错位：不再信任后续字节
+                int headerBytes = fs.Read(head);
+                if (headerBytes > 0 && !IsTagType(head[0]))
+                    return false; // 数据流错位：不能把后续媒体帧当截断尾删除
+                if (headerBytes != 4)
+                {
+                    truncatedTag = true;
+                    break;
+                }
+                if (!IsTagType(head[0])) return false;
+                if (pos + 11 > len)
+                {
+                    truncatedTag = true;
+                    break;
+                }
                 int dlen = (head[1] << 16) | (head[2] << 8) | head[3];
                 long total = 11L + dlen + 4; // 标签头 11 字节 + 负载 + 4 字节 prevTagSize
-                if (pos + total > len) break; // 截断尾：最后一个完整标签结束于 lastGoodEnd
+                if (pos + total > len)
+                {
+                    truncatedTag = true;
+                    break;
+                }
+                fs.Position = pos + 11 + dlen;
+                if (fs.ReadAtLeast(previousSize, previousSize.Length, throwOnEndOfStream: false) != previousSize.Length ||
+                    BinaryPrimitives.ReadUInt32BigEndian(previousSize) != 11U + (uint)dlen)
+                    return false;
                 pos += total;
                 lastGoodEnd = pos;
             }
-            if (lastGoodEnd > 13 && lastGoodEnd < len)
+            if (truncatedTag && lastGoodEnd > firstTagOffset && lastGoodEnd < len)
             {
                 fs.SetLength(lastGoodEnd);
                 fs.Flush();
@@ -522,6 +587,256 @@ public static class LiveStreamUtil
         catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex))
         {
             Logger.LogDebug("裁剪 FLV 截断尾失败: {0}", ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 逐标签检查 FLV 容器并统计音视频帧，只读取负载开头的编解码标志。
+    /// concat 会去掉后续分段重复的 AAC/AVC/Enhanced FLV 序列头（可能还有流结束标签），
+    /// 因此不能把所有音视频标签都计入预期帧数。元数据标签同样由 FFmpeg 改写。
+    /// </summary>
+    private readonly record struct FlvPacketCounts(long Audio, long Video)
+    {
+        public long Total => Audio + Video;
+        public override string ToString() => $"音频 {Audio}/视频 {Video}";
+    }
+
+    private static bool TryGetEnhancedAudioPacketType(FileStream file, byte firstByte, byte secondByte, long payloadEnd, out int packetType)
+    {
+        packetType = firstByte & 0x0F;
+        bool packetTypeFromModEx = packetType == 7;
+        if (packetTypeFromModEx)
+        {
+            // ModEx: each sized extension is followed by its type and the next audio packet type.
+            int sizeByte = secondByte;
+            do
+            {
+                int size = sizeByte + 1;
+                if (size == 256)
+                {
+                    if (file.Position + 2L > payloadEnd) return false;
+                    int high = file.ReadByte();
+                    int low = file.ReadByte();
+                    if (high < 0 || low < 0) return false;
+                    size = ((high << 8) | low) + 1;
+                }
+                if (file.Position + size + 1L > payloadEnd) return false;
+                file.Position += size;
+                int modExHeader = file.ReadByte();
+                if (modExHeader < 0 || (modExHeader >> 4) != 0 || size < 3) return false;
+                packetType = modExHeader & 0x0F;
+                if (packetType == 7)
+                {
+                    if (file.Position >= payloadEnd) return false;
+                    sizeByte = file.ReadByte();
+                    if (sizeByte < 0) return false;
+                }
+            }
+            while (packetType == 7);
+        }
+
+        if (packetType == 5)
+        {
+            // Multitrack: support only OneTrack; other layouts require per-track payload parsing.
+            int header;
+            if (packetTypeFromModEx)
+            {
+                if (file.Position >= payloadEnd) return false;
+                header = file.ReadByte();
+            }
+            else
+                header = secondByte;
+            if (header < 0 || (header >> 4) != 0) return false;
+            packetType = header & 0x0F;
+            if (packetType is not (0 or 1 or 2 or 4) || file.Position + 5L > payloadEnd)
+                return false;
+            file.Position += 5; // AudioFourCC and trackId
+        }
+        else if (packetTypeFromModEx)
+        {
+            if (file.Position + 4L > payloadEnd) return false;
+            file.Position += 4; // AudioFourCC follows the ModEx header
+        }
+        else
+        {
+            if (file.Position + 3L > payloadEnd) return false;
+            file.Position += 3; // The already-read second byte is the first AudioFourCC byte
+        }
+
+        return (packetType is 0 or 1 or 2 or 4) && (packetType != 1 || file.Position < payloadEnd);
+    }
+
+    private static bool TryGetEnhancedVideoPacket(FileStream file, byte firstByte, byte secondByte, long payloadEnd, out bool isMediaFrame)
+    {
+        isMediaFrame = false;
+        int packetType = firstByte & 0x0F;
+        bool packetTypeFromModEx = packetType == 7;
+        if (packetTypeFromModEx)
+        {
+            // ModEx entries precede the FourCC and the packet body.
+            int sizeByte = secondByte;
+            do
+            {
+                int size = sizeByte + 1;
+                if (size == 256)
+                {
+                    if (file.Position + 2L > payloadEnd) return false;
+                    int high = file.ReadByte();
+                    int low = file.ReadByte();
+                    if (high < 0 || low < 0) return false;
+                    size = ((high << 8) | low) + 1;
+                }
+                if (size < 3 || file.Position + size + 1L > payloadEnd) return false;
+                file.Position += size;
+                int modExHeader = file.ReadByte();
+                if (modExHeader < 0 || (modExHeader >> 4) != 0) return false;
+                packetType = modExHeader & 0x0F;
+                if (packetType == 7)
+                {
+                    if (file.Position >= payloadEnd) return false;
+                    sizeByte = file.ReadByte();
+                    if (sizeByte < 0) return false;
+                }
+            }
+            while (packetType == 7);
+        }
+
+        bool oneTrack = false;
+        if (packetType == 6)
+        {
+            int multitrackHeader = packetTypeFromModEx ? file.ReadByte() : secondByte;
+            if (multitrackHeader < 0 || (multitrackHeader >> 4) != 0) return false;
+            packetType = multitrackHeader & 0x0F;
+            if (packetType is not (0 or 1 or 2 or 3 or 4 or 5)) return false;
+            oneTrack = true;
+        }
+
+        Span<byte> fourCc = stackalloc byte[4];
+        if (!packetTypeFromModEx && !oneTrack)
+        {
+            fourCc[0] = secondByte;
+            if (file.ReadAtLeast(fourCc[1..], 3, throwOnEndOfStream: false) != 3) return false;
+        }
+        else if (file.ReadAtLeast(fourCc, fourCc.Length, throwOnEndOfStream: false) != fourCc.Length)
+            return false;
+
+        if (oneTrack && file.ReadByte() < 0) return false; // OneTrack VideoTrackId
+
+        bool hasCompositionTime = fourCc.SequenceEqual("avc1"u8) ||
+            fourCc.SequenceEqual("hvc1"u8) || fourCc.SequenceEqual("vvc1"u8);
+        bool knownFourCc = hasCompositionTime || fourCc.SequenceEqual("vp08"u8) ||
+            fourCc.SequenceEqual("vp09"u8) || fourCc.SequenceEqual("av01"u8) || fourCc.SequenceEqual("mp4v"u8);
+        if (!knownFourCc && packetType is not (4 or 5)) return false;
+        if (packetType == 1)
+        {
+            if (hasCompositionTime)
+            {
+                if (payloadEnd - file.Position <= 3) return false;
+                file.Position += 3;
+            }
+            isMediaFrame = file.ReadByte() >= 0;
+        }
+        else if (packetType == 3)
+        {
+            if (!hasCompositionTime) return false;
+            isMediaFrame = file.Position < payloadEnd; // CodedFramesX
+        }
+
+        return true;
+    }
+
+    private static bool TryCountFlvMediaPackets(string path, out FlvPacketCounts packets, CancellationToken token = default)
+    {
+        packets = default;
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!TryReadFlvHeader(file, out _)) return false;
+
+            long audio = 0;
+            long video = 0;
+            Span<byte> tag = stackalloc byte[11];
+            Span<byte> prefix = stackalloc byte[2];
+            Span<byte> previousSize = stackalloc byte[4];
+            while (file.Position < file.Length)
+            {
+                token.ThrowIfCancellationRequested();
+                if (file.ReadAtLeast(tag, tag.Length, throwOnEndOfStream: false) != tag.Length)
+                    return false;
+                int payloadLength = (tag[1] << 16) | (tag[2] << 8) | tag[3];
+                long tagLength = 11L + payloadLength + 4;
+                int tagType = tag[0] & 0x1F;
+                if (tagType is not (0x08 or 0x09 or 0x12) ||
+                    (tag[0] & 0xE0) != 0 || // 未解析 Filter/保留标志，不能猜测负载偏移
+                    tag[8] != 0 || tag[9] != 0 || tag[10] != 0 ||
+                    file.Length - file.Position < payloadLength + 4L)
+                    return false;
+                // AAC/AVC/Enhanced FLV 的序列头与结束标记属于流配置，不是媒体帧；
+                // FFmpeg 合并时会规范化或丢弃重复配置标签。
+                bool isMediaFrame = payloadLength > 0;
+                long payloadEnd = file.Position + payloadLength;
+                if (isMediaFrame && tagType == 0x09 && payloadLength == 1)
+                    return false;
+                if (isMediaFrame && tagType is (0x08 or 0x09))
+                {
+                    if (payloadLength < 2 || file.ReadAtLeast(prefix, prefix.Length, throwOnEndOfStream: false) != prefix.Length)
+                        return false;
+                    if (tagType == 0x08)
+                    {
+                        int soundFormat = prefix[0] >> 4;
+                        if (soundFormat == 9)
+                        {
+                            if (!TryGetEnhancedAudioPacketType(file, prefix[0], prefix[1], payloadEnd, out int packetType))
+                                return false;
+                            isMediaFrame = packetType == 1 && file.Position < payloadEnd; // CodedFrames (0=SequenceStart, 2=SequenceEnd)
+                        }
+                        else if (soundFormat == 10)
+                            isMediaFrame = prefix[1] == 1 && file.Position < payloadEnd; // AAC raw frame (0=sequence header)
+                    }
+                    else if ((prefix[0] & 0x80) != 0)
+                    {
+                        if (!TryGetEnhancedVideoPacket(file, prefix[0], prefix[1], payloadEnd, out isMediaFrame))
+                            return false;
+                    }
+                    else
+                    {
+                        int frameType = prefix[0] >> 4;
+                        int codecId = prefix[0] & 0x0F;
+                        if (codecId is 7 or 9 or 12)
+                        {
+                            isMediaFrame = false;
+                            if (prefix[1] is not (0 or 1 or 2)) return false;
+                            if (prefix[1] == 1)
+                            {
+                                if (codecId == 9)
+                                {
+                                    if (payloadLength < 6) return false; // MPEG4 packet type + composition time + coded payload
+                                }
+                                else if (payloadLength < 6)
+                                    return false; // AVC/HEVC packet type + composition time + coded payload
+                                isMediaFrame = true;
+                            }
+                        }
+                        else if (codecId is 1 or 2 or 3 or 4 or 5 or 6)
+                            isMediaFrame = frameType is 1 or 2 || (codecId == 2 && frameType == 3); // H.263 disposable interframe
+                        else
+                            return false; // 未知的视频编码包型不用于推断完整性
+                    }
+                }
+                file.Position = payloadEnd;
+                if (file.ReadAtLeast(previousSize, previousSize.Length, throwOnEndOfStream: false) != previousSize.Length ||
+                    BinaryPrimitives.ReadUInt32BigEndian(previousSize) != tagLength - 4)
+                    return false;
+                if (tagType == 0x08 && isMediaFrame) audio++;
+                if (isMediaFrame && tagType == 0x09) video++;
+            }
+
+            packets = new FlvPacketCounts(audio, video);
+            return true;
+        }
+        catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex))
+        {
             return false;
         }
     }
@@ -539,18 +854,16 @@ public static class LiveStreamUtil
         var absoluteOutPath = Path.GetFullPath(outPath);
         try
         {
-            long totalInputBytes = 0;
+            var expectedPackets = new FlvPacketCounts(0, 0);
             foreach (var seg in segmentFiles)
             {
-                if (!File.Exists(seg))
+                if (!TryCountFlvMediaPackets(seg, out var packets, token) || packets.Total == 0)
                 {
-                    Logger.LogWarn($"直播分段不存在: {seg}");
+                    Logger.LogWarn($"直播分段不是完整的 FLV 媒体文件: {seg}");
                     return false;
                 }
-                totalInputBytes += new FileInfo(seg).Length;
+                expectedPackets = new(expectedPackets.Audio + packets.Audio, expectedPackets.Video + packets.Video);
             }
-
-            if (totalInputBytes == 0) return false;
 
             await File.WriteAllLinesAsync(listPath, segmentFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'"), token);
             var args = new List<string>
@@ -575,20 +888,13 @@ public static class LiveStreamUtil
             if (code != 0 || !File.Exists(absoluteOutPath))
                 return false;
 
-            long outLen = new FileInfo(absoluteOutPath).Length;
-            if (outLen == 0) return false;
-
-            // FLV concat copy 时，产物大小应与所有分段总和相当（FLV header 占 9~13 字节，多段合并时略有减少）。
-            // 若某个分段遇到坏段/HTML导致 demux 提前终止，ffmpeg exit=0 但输出大小会显著小于全部输入总大小（如只生成了坏段之前的几KB）。
-            // 当分段数大于1时，输出大小若低于输入总大小的 80% 且差异超过 64KB，判定为截断坏产物。
-            if (segmentFiles.Count > 1)
+            // remux 会改写容器/时间戳，字节数无法证明每段内容都在输出里。
+            // 逐轨对比媒体帧数，缺失短分段时不能标记成功并删除原分段。
+            if (!TryCountFlvMediaPackets(absoluteOutPath, out var outputPackets, token) ||
+                outputPackets.Audio < expectedPackets.Audio || outputPackets.Video < expectedPackets.Video)
             {
-                long minExpected = (long)(totalInputBytes * MinCompleteStreamRatio);
-                if (outLen < minExpected && (totalInputBytes - outLen) > 64 * 1024)
-                {
-                    Logger.LogWarn($"直播分段合成产物大小异常(输出: {outLen} 字节, 预期总输入: {totalInputBytes} 字节)，判定为合成截断失败");
-                    return false;
-                }
+                Logger.LogWarn($"直播分段合成缺少媒体帧或 FLV 结构异常(输出: {outputPackets}, 输入: {expectedPackets})，已保留原分段");
+                return false;
             }
 
             return true;
@@ -680,7 +986,18 @@ public static class LiveStreamUtil
                     throw new LiveStreamWriteException($"本地写入失败: {segPath} ({ex.Message})", ex);
                 }
                 written += read;
-                onProgress?.Invoke(progressBase + written);
+                try
+                {
+                    onProgress?.Invoke(progressBase + written);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    return (written, ReadInterrupted: true);
+                }
+                catch (Exception ex)
+                {
+                    throw new LiveStreamWriteException($"直播录制进度回调失败: {ex.Message}", ex);
+                }
             }
             return (written, ReadInterrupted: false);
         }

@@ -53,8 +53,8 @@ public class LiveStreamUtilTests
 
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
-            File.WriteAllText(seg1, "a");
-            File.WriteAllText(seg2, "b");
+            await File.WriteAllBytesAsync(seg1, BuildTestFlv(1));
+            await File.WriteAllBytesAsync(seg2, BuildTestFlv(1));
             var outPath = Path.Combine(dir, "out.flv");
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], outPath, CancellationToken.None);
@@ -92,7 +92,7 @@ public class LiveStreamUtilTests
 
             var outPath = Path.Combine(dir, "out.flv");
             var seg1 = Path.Combine(dir, "seg-000.flv");
-            File.WriteAllText(seg1, "a");
+            await File.WriteAllBytesAsync(seg1, BuildTestFlv(1));
 
             await LiveStreamUtil.ConcatSegmentsAsync([seg1], outPath, CancellationToken.None);
 
@@ -150,13 +150,13 @@ public class LiveStreamUtilTests
     }
 
     /// <summary>
-    /// 当分段合并输出文件大小显著小于全部输入分段总和（如坏分段导致 ffmpeg concat demuxer 提前退出并生成截断产物），
+    /// 当分段合并输出缺少输入媒体帧（如坏分段导致 ffmpeg concat demuxer 提前退出并生成截断产物），
     /// ConcatSegmentsAsync 必须判定为失败并返回 false，防止误删可恢复的分段。
     /// </summary>
     [Fact]
     public async Task ConcatSegments_TruncatedOutput_ReturnsFalse()
     {
-        var fake = new FakeProcessRunner(exitCode: 0, outputContent: "tiny");
+        var fake = new FakeProcessRunner(exitCode: 0, outputContent: BuildTestFlv(1));
         var original = BBDownMuxer.ProcessRunner;
         var dir = Path.Combine(Path.GetTempPath(), "live-segs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -166,11 +166,11 @@ public class LiveStreamUtilTests
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
             // 创建两个较大的分段（各 100KB）
-            File.WriteAllBytes(seg1, new byte[100 * 1024]);
-            File.WriteAllBytes(seg2, new byte[100 * 1024]);
+            File.WriteAllBytes(seg1, BuildTestFlv(25));
+            File.WriteAllBytes(seg2, BuildTestFlv(25));
             var outPath = Path.Combine(dir, "out.flv");
 
-            // fake 只写了 "tiny" (4 字节)，远小于 200KB 的输入总长
+            // fake 只写一个完整媒体包，远少于输入的 50 个包
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], outPath, CancellationToken.None);
 
             Assert.False(ok);
@@ -182,8 +182,545 @@ public class LiveStreamUtilTests
         }
     }
 
+    [Fact]
+    public async Task ConcatSegments_MissingSmallLastSegment_ReturnsFalse()
+    {
+        // 输出保留九成输入：旧的 80% / 64KB 大小阈值会把漏掉末段误判为成功。
+        var fake = new FakeProcessRunner(exitCode: 0, outputContent: BuildTestFlv(9));
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-segs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            await File.WriteAllBytesAsync(seg1, BuildTestFlv(9));
+            await File.WriteAllBytesAsync(seg2, BuildTestFlv(1));
+            BBDownMuxer.ProcessRunner = fake;
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok);
+            Assert.Single(fake.Specs);
+            Assert.True(File.Exists(seg1));
+            Assert.True(File.Exists(seg2));
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFile_EmptyVideoPayload_KeepsOldOutputAndSegment()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.EmptyVideoPayload);
+        server.OfflineAfterStreams = 1;
+        var dir = Path.Combine(Path.GetTempPath(), "live-empty-video-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        try
+        {
+            await File.WriteAllTextAsync(outPath, "旧录制");
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+
+            var result = await LiveStreamUtil.DownloadToFileAsync("12345", outPath, null);
+
+            Assert.Equal(LiveStreamUtil.LiveRecordResult.ConcatFailedWithSegmentsSaved, result);
+            Assert.Equal("旧录制", await File.ReadAllTextAsync(outPath));
+            Assert.Single(Directory.GetFiles(outPath + ".segs", "seg-*.flv", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Theory]
+    [InlineData(9)]
+    [InlineData(13)]
+    public async Task ConcatSegments_ValidFlvDataOffset_IsSupported(int dataOffset)
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-data-offset-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var segment = Path.Combine(dir, "seg.flv");
+            await File.WriteAllBytesAsync(segment, BuildTestFlv(1, dataOffset: dataOffset));
+            if (dataOffset > 9)
+            {
+                // TrimFlvTail 与媒体计数共用 DataOffset，截断末标签仍能正确裁除。
+                var valid = await File.ReadAllBytesAsync(segment);
+                await File.WriteAllBytesAsync(segment, [.. valid, 0x09, 0x00, 0x20, 0x00]);
+                Assert.True(LiveStreamUtil.TrimFlvTail(segment));
+                Assert.Equal(valid.Length, new FileInfo(segment).Length);
+            }
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0);
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedFlvConfigTags_AreNotMediaFrames()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedFlv(1));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedFlv(1));
+            // FFmpeg 合并后只保留一个序列头，两个编码帧仍都在产物中。
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedFlv(2));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedAudioModExCodedFrames_AreCounted()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-audio-modex-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] basicFrame = [0x91, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0xAA];
+            byte[] modExFrame = [0x97, 0x02, 0x00, 0x00, 0x00, 0x01, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0xBB];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedAudioFlv(basicFrame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedAudioFlv(modExFrame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0,
+                outputContent: BuildEnhancedAudioFlv(basicFrame, modExFrame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedAudioModExExtendedLength_IsCounted()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-audio-modex-long-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] basicFrame = [0x91, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0xAA];
+            var extendedPacket = new List<byte> { 0x97, 0xFF, 0x00, 0xFF };
+            extendedPacket.AddRange(new byte[256]); // UI16 + 1 = 256-byte ModEx data
+            extendedPacket.AddRange([0x01, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0xBB]);
+            byte[] extendedFrame = [.. extendedPacket];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedAudioFlv(basicFrame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedAudioFlv(extendedFrame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0,
+                outputContent: BuildEnhancedAudioFlv(basicFrame, extendedFrame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedAudioOneTrackMultitrack_CodedFramesAreCounted()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-audio-multitrack-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x95, 0x01, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0, 0xAA];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedAudioFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedAudioFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedAudioFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0x95, 0x11, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 0, 0xAA })]
+    [InlineData(new byte[] { 0x95, 0x01, (byte)'O', (byte)'p' })]
+    public async Task ConcatSegments_UnsupportedOrTruncatedEnhancedAudioMultitrack_ReturnsFalse(byte[] frame)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-audio-invalid-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var segment = Path.Combine(dir, "seg-000.flv");
+            await File.WriteAllBytesAsync(segment, BuildEnhancedAudioFlv(frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_FilteredMediaTag_IsRejectedWithoutGuessingPayloadOffset()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-filtered-tag-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var segment = Path.Combine(dir, "seg-000.flv");
+            var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+            data.AddRange(BuildFilteredFlvTag([0x17, 1, 0, 0, 0, 0x26]));
+            await File.WriteAllBytesAsync(segment, [.. data]);
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedVideoModExCodedFrames_AreCounted()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-modex-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x97, 0x02, 0, 0, 0, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedVideoCodedFramesX_CountsWithoutCompositionTime()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-framesx-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x93, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedVideoCodedFramesX_WithVp9_IsRejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-framesx-invalid-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var segment = Path.Combine(dir, "seg-000.flv");
+            await File.WriteAllBytesAsync(segment, BuildEnhancedVideoFlv([0x93, (byte)'v', (byte)'p', (byte)'0', (byte)'9', 0x26]));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedVideoMpeg4_CodedFrameDoesNotRequireCompositionTime()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-mp4v-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x91, (byte)'m', (byte)'p', (byte)'4', (byte)'v', 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Theory]
+    [InlineData("vp08")]
+    [InlineData("vp09")]
+    [InlineData("av01")]
+    public async Task ConcatSegments_EnhancedVideoCodecsWithoutCompositionTime_AreCounted(string fourCc)
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-no-cts-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x91, .. System.Text.Encoding.ASCII.GetBytes(fourCc), 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_EnhancedVideoOneTrackMultitrack_CodedFramesAreCounted()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-enhanced-video-multitrack-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            byte[] frame = [0x96, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Theory]
+    [InlineData(9)]
+    [InlineData(12)]
+    public async Task ConcatSegments_LegacyPacketizedCodecFrames_AreCounted(int codecId)
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-legacy-hevc-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            await File.WriteAllBytesAsync(seg1, BuildLegacyPacketizedFlv(codecId, 1));
+            await File.WriteAllBytesAsync(seg2, BuildLegacyPacketizedFlv(codecId, 1));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildLegacyPacketizedFlv(codecId, 2));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.True(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_LegacyDisposableInterframeMissingFromOutput_ReturnsFalse()
+    {
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-disposable-frames-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            await File.WriteAllBytesAsync(seg1, BuildLegacyVideoFlv(1, 3));
+            await File.WriteAllBytesAsync(seg2, BuildLegacyVideoFlv(3));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildLegacyVideoFlv(1, 3));
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok); // 缺少一个 disposable interframe 也必须检测到
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcatSegments_MalformedAvcCodedFrame_IsRejected()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-malformed-avc-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var segment = Path.Combine(dir, "seg-000.flv");
+            var flv = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+            flv.AddRange(BuildFlvTag(9, [0x17, 1], [])); // marker only: missing CTS and NALU bytes
+            await File.WriteAllBytesAsync(segment, [.. flv]);
+
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
+
+            Assert.False(ok);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFile_MissingLastSegment_KeepsOldOutputAndAllSegments()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.AbortMidStream);
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);
+        server.OfflineAfterStreams = 2;
+        var dir = Path.Combine(Path.GetTempPath(), "live-missing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        var originalRunner = BBDownMuxer.ProcessRunner;
+        try
+        {
+            await File.WriteAllTextAsync(outPath, "旧录制");
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildTestFlv(server.StreamChunkCount));
+
+            var result = await LiveStreamUtil.DownloadToFileAsync("12345", outPath, null);
+
+            Assert.Equal(LiveStreamUtil.LiveRecordResult.ConcatFailedWithSegmentsSaved, result);
+            Assert.Equal("旧录制", await File.ReadAllTextAsync(outPath));
+            Assert.Equal(2, Directory.GetFiles(outPath + ".segs", "seg-*.flv", SearchOption.AllDirectories).Length);
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            BBDownMuxer.ProcessRunner = originalRunner;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFile_FinalMoveFails_PreservesAllSegments()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.AbortMidStream);
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);
+        server.OfflineAfterStreams = 2;
+        var dir = Path.Combine(Path.GetTempPath(), "live-final-move-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        var originalRunner = BBDownMuxer.ProcessRunner;
+        try
+        {
+            Directory.CreateDirectory(outPath); // 文件目标被同名目录占据：发布最终产物应失败。
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+            BBDownMuxer.ProcessRunner = new ConcatProcessRunner();
+
+            var result = await LiveStreamUtil.DownloadToFileAsync("12345", outPath, null);
+
+            Assert.Equal(LiveStreamUtil.LiveRecordResult.ConcatFailedWithSegmentsSaved, result);
+            Assert.True(Directory.Exists(outPath));
+            Assert.Equal(2, Directory.GetFiles(outPath + ".segs", "seg-*.flv", SearchOption.AllDirectories).Length);
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            BBDownMuxer.ProcessRunner = originalRunner;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     /// <summary>
-    /// SelectFlvUrl 的选流纯函数测试（内联 JSON，无网络）：FLV 被优先选中，
+    /// SelectFlvUrl 的选流纯函数测试（内联 JSON，无网络）：FLV 被优先选中,
     /// availableFormats 收集接口实际提供的全部格式（含被跳过的 ts/fmp4），
     /// quality 返回选中 codec 的 current_qn。
     /// </summary>
@@ -315,6 +852,64 @@ public class LiveStreamUtilTests
         try { Directory.Delete(dir, true); } catch { }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DownloadToFile_ProgressFailure_PreservesUntrackedSegment(bool throwCancellation)
+    {
+        // 回调在首段已写盘、但尚未加入 segmentFiles 时抛错：不能因 total==0 删除会话。
+        using var server = new FakeLiveServer();
+        var dir = Path.Combine(Path.GetTempPath(), "live-progress-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        try
+        {
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+            await Assert.ThrowsAsync<LiveStreamUtil.LiveStreamWriteException>(() => LiveStreamUtil.DownloadToFileAsync(
+                "12345", outPath, _ => throw (throwCancellation
+                    ? new OperationCanceledException("进度回调自行取消")
+                    : new InvalidOperationException("进度回调故障"))));
+
+            var seg = Assert.Single(Directory.GetFiles(outPath + ".segs", "seg-*.flv", SearchOption.AllDirectories));
+            Assert.True(new FileInfo(seg).Length > 0);
+            Assert.False(File.Exists(outPath));
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task DownloadToFile_InvalidSingleSegment_KeepsOldOutputAndSegment()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.InvalidLargeSegment);
+        server.OfflineAfterStreams = 1;
+        var dir = Path.Combine(Path.GetTempPath(), "live-invalid-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var outPath = Path.Combine(dir, "out.flv");
+        var originalHost = LiveStreamUtil.LiveApiHost;
+        try
+        {
+            await File.WriteAllTextAsync(outPath, "旧录制");
+            LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
+            var result = await LiveStreamUtil.DownloadToFileAsync("12345", outPath, null);
+
+            Assert.Equal(LiveStreamUtil.LiveRecordResult.ConcatFailedWithSegmentsSaved, result);
+            Assert.Equal("旧录制", await File.ReadAllTextAsync(outPath));
+            var seg = Assert.Single(Directory.GetFiles(outPath + ".segs", "seg-*.flv", SearchOption.AllDirectories));
+            Assert.True(new FileInfo(seg).Length >= 13);
+        }
+        finally
+        {
+            LiveStreamUtil.LiveApiHost = originalHost;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     /// <summary>
     /// 网络断开（连接中途被服务器掐断）后必须自动重新解析并续录到新分段，
     /// 全部结束后合成最终文件；主播下播则正常结束。
@@ -333,7 +928,7 @@ public class LiveStreamUtilTests
         Assert.Equal(2, server.StreamRequestCount); // 断流后自动重连了一次
         var saved = await File.ReadAllBytesAsync(outPath);
         // 两段内容都应合入最终文件（每段 ChunkCount 块 × ChunkBytes）
-        long expected = 2L * server.StreamChunkCount * server.StreamChunkBytes;
+        long expected = 2L * server.StreamChunkCount * server.StreamChunkBytes - 13; // concat 只保留一个 FLV 头
         Assert.Equal(expected, saved.Length);
         Assert.False(Directory.Exists(outPath + ".segs"), "录制结束后不应残留 .segs 临时目录");
         try { Directory.Delete(dir, true); } catch { }
@@ -360,7 +955,7 @@ public class LiveStreamUtilTests
         // 不用精确 ==2：慢环境下首段可能因调度抖动被看门狗提前触发一次额外重连。
         Assert.True(server.StreamRequestCount >= 2, $"预期至少重连一次，实际请求数: {server.StreamRequestCount}");
         var saved = await File.ReadAllBytesAsync(outPath);
-        long expected = (1L + server.StreamChunkCount) * server.StreamChunkBytes;
+        long expected = (1L + server.StreamChunkCount) * server.StreamChunkBytes - 13; // concat 只保留一个 FLV 头
         Assert.Equal(expected, saved.Length);
         try { Directory.Delete(dir, true); } catch { }
     }
@@ -660,6 +1255,33 @@ public class LiveStreamUtilTests
         }
     }
 
+    [Fact]
+    public void TrimFlvTail_InvalidTagType_PreservesRecoverableBytes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-invalid-tail-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "seg.flv");
+        try
+        {
+            var data = BuildTestFlv(1);
+            var malformed = new byte[data.Length + 4 + 4096];
+            data.CopyTo(malformed, 0);
+            malformed[data.Length] = 0x12; // 已知标签头但后续被截断
+            malformed[data.Length + 1] = 0x00;
+            malformed[data.Length + 2] = 0x10;
+            malformed[data.Length + 3] = 0x00;
+            BuildTestFlvChunk(4096, false).CopyTo(malformed, data.Length + 4);
+            File.WriteAllBytes(path, malformed);
+
+            Assert.True(LiveStreamUtil.TrimFlvTail(path));
+            Assert.Equal(data.Length, new FileInfo(path).Length);
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     /// <summary>尾部完整（正常 EOF）时 TrimFlvTail 不应改动文件。</summary>
     [Fact]
     public void TrimFlvTail_CompleteFile_Unchanged()
@@ -749,6 +1371,106 @@ public class LiveStreamUtilTests
         }
     }
 
+    private static byte[] BuildTestFlv(int packetCount, int chunkBytes = 4096, int dataOffset = 9)
+    {
+        var data = new byte[packetCount * chunkBytes + dataOffset - 9];
+        for (int i = 0; i < packetCount; i++)
+            BuildTestFlvChunk(chunkBytes, i == 0, dataOffset).CopyTo(data, i == 0 ? 0 : chunkBytes + dataOffset - 9 + (i - 1) * chunkBytes);
+        return data;
+    }
+
+    private static byte[] BuildTestFlvChunk(int bytes, bool first, int dataOffset = 9, int videoFrameType = 1)
+    {
+        const int tagOverhead = 15;
+        int headerLength = first ? dataOffset + 4 : 0;
+        int payloadLength = bytes - (first ? 13 : 0) - tagOverhead;
+        var chunk = new byte[bytes + (first ? dataOffset - 9 : 0)];
+        if (first)
+        {
+            "FLV"u8.CopyTo(chunk);
+            chunk[3] = 1;
+            chunk[4] = 1;
+            chunk[5] = (byte)(dataOffset >> 24);
+            chunk[6] = (byte)(dataOffset >> 16);
+            chunk[7] = (byte)(dataOffset >> 8);
+            chunk[8] = (byte)dataOffset;
+        }
+        int tagStart = headerLength;
+        if (first && dataOffset > 9)
+        {
+            int previousSizeStart = dataOffset;
+            chunk[previousSizeStart] = 0;
+            chunk[previousSizeStart + 1] = 0;
+            chunk[previousSizeStart + 2] = 0;
+            chunk[previousSizeStart + 3] = 0;
+        }
+        chunk[tagStart] = 9; // 视频标签
+        chunk[tagStart + 11] = (byte)((videoFrameType << 4) | 7); // AVC frame type and codec id
+        chunk[tagStart + 12] = 1; // AVC NALU packet
+        chunk[tagStart + 1] = (byte)(payloadLength >> 16);
+        chunk[tagStart + 2] = (byte)(payloadLength >> 8);
+        chunk[tagStart + 3] = (byte)payloadLength;
+        int previousSize = payloadLength + 11;
+        chunk[^4] = (byte)(previousSize >> 24);
+        chunk[^3] = (byte)(previousSize >> 16);
+        chunk[^2] = (byte)(previousSize >> 8);
+        chunk[^1] = (byte)previousSize;
+        return chunk;
+    }
+
+    private static byte[] BuildEnhancedAudioFlv(params byte[][] packets)
+    {
+        var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+        foreach (var packet in packets)
+            data.AddRange(BuildFlvTag(8, packet, []));
+        return data.ToArray();
+    }
+
+    private static byte[] BuildLegacyPacketizedFlv(int codecId, int frames)
+    {
+        var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+        data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0], [])); // sequence header
+        for (int i = 0; i < frames; i++)
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 1, 0, 0, 0, 0x26], [])); // coded packet
+        return data.ToArray();
+    }
+
+    private static byte[] BuildLegacyVideoFlv(params int[] frameTypes)
+    {
+        var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+        foreach (int frameType in frameTypes)
+            data.AddRange(BuildFlvTag(9, [(byte)((frameType << 4) | 2), 0x11], []));
+        return data.ToArray();
+    }
+
+    private static byte[] BuildEnhancedVideoFlv(params byte[][] packets)
+    {
+        var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+        foreach (var packet in packets)
+            data.AddRange(BuildFlvTag(9, packet, []));
+        return data.ToArray();
+    }
+
+    private static byte[] BuildFilteredFlvTag(byte[] payload)
+    {
+        var tag = BuildFlvTag(0x29, payload, []);
+        tag[0] = 0x29;
+        return tag;
+    }
+
+    private static byte[] BuildEnhancedFlv(int frames)
+    {
+        var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+        data.AddRange(BuildFlvTag(8, [0x90, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 1], [])); // Enhanced Audio SequenceStart
+        data.AddRange(BuildFlvTag(9, [0x90, (byte)'h', (byte)'v', (byte)'c', (byte)'1'], [])); // Enhanced Video SequenceStart
+        for (int i = 0; i < frames; i++)
+        {
+            data.AddRange(BuildFlvTag(8, [0x91, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 2], [])); // Enhanced Audio CodedFrames
+            data.AddRange(BuildFlvTag(9, [0x91, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 2], [])); // Enhanced Video CodedFrames
+        }
+        return data.ToArray();
+    }
+
     private static byte[] BuildFlvTag(int type, byte[] payload, byte[] extra, int? declaredPayload = null)
     {
         int declared = declaredPayload ?? payload.Length + extra.Length;
@@ -760,7 +1482,9 @@ public class LiveStreamUtilTests
         tag.AddRange(new byte[3]); // stream id
         tag.AddRange(payload);
         tag.AddRange(extra);
-        tag.AddRange(new byte[] { 0, 0, 0, 0 }); // prevTagSize（值不校验）
+        int actualTagLength = 11 + payload.Length + extra.Length;
+        tag.AddRange([(byte)(actualTagLength >> 24), (byte)(actualTagLength >> 16),
+            (byte)(actualTagLength >> 8), (byte)actualTagLength]); // PreviousTagSize
         return tag.ToArray();
     }
 
@@ -772,17 +1496,16 @@ public class LiveStreamUtilTests
         return r;
     }
 
-    /// <summary>记录收到的调用与取消令牌的假执行器。能捕获外部进程的 stdin 输入。
-    /// 模拟真实 concat 产物：在 args 最后一个参数（输出路径）生成非空文件，使
-    /// ConcatSegmentsAsync 的"产物存在且非空"校验通过。</summary>
+    /// <summary>记录收到的调用与取消令牌的假执行器。捕获 concat 列表，
+    /// 并在输出路径生成可检查媒体帧数量的 FLV 文件。</summary>
     private sealed class FakeProcessRunner : IExternalProcessRunner
     {
         private readonly int _exitCode;
-        private readonly string _outputContent;
+        private readonly byte[]? _outputContent;
         public List<ExternalProcessSpec> Specs { get; } = [];
         public string? CapturedInput { get; private set; }
 
-        public FakeProcessRunner(int exitCode, string outputContent = "merged")
+        public FakeProcessRunner(int exitCode, byte[]? outputContent = null)
         {
             _exitCode = exitCode;
             _outputContent = outputContent;
@@ -797,16 +1520,20 @@ public class LiveStreamUtilTests
             var listArg = spec.Arguments[spec.Arguments.IndexOf("-i") + 1];
             if (File.Exists(listArg))
                 CapturedInput = File.ReadAllText(listArg);
-            // 模拟 concat 产出：写出非空产物，满足"产物存在且非空"校验
+            // 默认输出所有输入媒体包；可注入少包产物验证漏段保护。
             var outArg = spec.Arguments[^1];
-            File.WriteAllText(outArg, _outputContent);
+            if (_outputContent is not null)
+                File.WriteAllBytes(outArg, _outputContent);
+            else
+                File.WriteAllBytes(outArg, BuildTestFlv(
+                    CapturedInput!.Split('\n').Count(line => line.StartsWith("file '", StringComparison.Ordinal))));
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_exitCode);
         }
     }
 
-    /// <summary>把 concat 列表里的分段真实拼接为产物：让多分段录制循环测试的
-    /// 大小校验（产物 ≥ 输入 80%）通过。</summary>
+    /// <summary>把 concat 列表里的分段拼接为结构完整的 FLV 产物，
+    /// 供多分段录制循环测试验证媒体帧计数。</summary>
     private sealed class ConcatProcessRunner : IExternalProcessRunner
     {
         public Task<int> RunAsync(ExternalProcessSpec spec, CancellationToken cancellationToken = default)
@@ -814,6 +1541,7 @@ public class LiveStreamUtilTests
             var listArg = spec.Arguments[spec.Arguments.IndexOf("-i") + 1];
             var outArg = spec.Arguments[^1];
             using var outFs = new FileStream(outArg, FileMode.Create, FileAccess.Write, FileShare.None);
+            bool first = true;
             foreach (var line in File.ReadAllLines(listArg))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -824,7 +1552,9 @@ public class LiveStreamUtilTests
                 var seg = path["file '".Length..^1].Replace("'\\''", "'");
                 if (!File.Exists(seg)) continue;
                 using var segFs = File.OpenRead(seg);
+                if (!first) segFs.Position = 13; // concat demuxer 输出只保留一个 FLV 头
                 segFs.CopyTo(outFs);
+                first = false;
             }
             return Task.FromResult(0);
         }
@@ -851,6 +1581,9 @@ public class LiveStreamUtilTests
             /// <summary>只写几个字节（不足完整 FLV 头的 13 字节）就 EOF——
             /// TrimFlvTail 无法裁剪、concat 必然失败的垃圾段。</summary>
             TinyHeader,
+            /// <summary>长度足够但内容不是 FLV 的 CDN 错误响应。</summary>
+            InvalidLargeSegment,
+            EmptyVideoPayload,
         }
 
         private readonly HttpListener _listener = new();
@@ -924,7 +1657,7 @@ public class LiveStreamUtilTests
                         case StreamMode.Normal:
                             for (int i = 0; i < StreamChunkCount; i++)
                             {
-                                await WriteChunkAsync(resp, StreamChunkBytes);
+                                await WriteChunkAsync(resp, StreamChunkBytes, i == 0);
                                 await Task.Delay(10, _cts.Token);
                             }
                             resp.Close();
@@ -932,7 +1665,7 @@ public class LiveStreamUtilTests
                         case StreamMode.AbortMidStream:
                             for (int i = 0; i < StreamChunkCount; i++)
                             {
-                                await WriteChunkAsync(resp, StreamChunkBytes);
+                                await WriteChunkAsync(resp, StreamChunkBytes, i == 0);
                                 await Task.Delay(10, _cts.Token);
                             }
                             resp.Abort(); // 中途掐断：客户端读流报连接中断
@@ -950,8 +1683,18 @@ public class LiveStreamUtilTests
                             resp.Close();
                             break;
                         case StreamMode.Stall:
-                            await WriteChunkAsync(resp, StreamChunkBytes);
+                            await WriteChunkAsync(resp, StreamChunkBytes, true);
                             await Task.Delay(Timeout.Infinite, _cts.Token); // 静默挂起
+                            break;
+                        case StreamMode.InvalidLargeSegment:
+                            await resp.OutputStream.WriteAsync(new byte[StreamChunkBytes], _cts.Token);
+                            resp.Close();
+                            break;
+                        case StreamMode.EmptyVideoPayload:
+                            var emptyVideo = BuildFlvTag(9, [], []);
+                            var header = new byte[] { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
+                            await resp.OutputStream.WriteAsync(Concat(header, emptyVideo), _cts.Token);
+                            resp.Close();
                             break;
                     }
                     if (streamNo >= OfflineAfterStreams) IsLive = false;
@@ -965,9 +1708,9 @@ public class LiveStreamUtilTests
             catch { /* 客户端中止/服务停止：忽略 */ }
         }
 
-        private async Task WriteChunkAsync(HttpListenerResponse resp, int bytes)
+        private async Task WriteChunkAsync(HttpListenerResponse resp, int bytes, bool first)
         {
-            var chunk = new byte[bytes];
+            var chunk = BuildTestFlvChunk(bytes, first);
             await resp.OutputStream.WriteAsync(chunk, _cts.Token);
             lock (_sync) StreamBytesWritten += bytes;
         }

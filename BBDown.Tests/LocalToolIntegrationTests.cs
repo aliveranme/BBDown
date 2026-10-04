@@ -116,6 +116,52 @@ public class LocalToolIntegrationTests
         finally { Directory.Delete(dir, true); }
     }
 
+    [Fact]
+    [Trait("Category", "LocalIntegration")]
+    [Trait("Tool", "ffmpeg")]
+    public async Task LiveConcat_RealFfmpeg_PreservesAllMediaPackets()
+    {
+        var ffmpeg = IntegrationTool("ffmpeg");
+        if (ffmpeg is null) return;
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-real-live-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var originalTool = BBDownMuxer.FFMPEG;
+        var originalRunner = BBDownMuxer.ProcessRunner;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            BBDownMuxer.FFMPEG = ffmpeg;
+            BBDownMuxer.ProcessRunner = new SystemProcessRunner();
+            var segments = new List<string>();
+            for (int i = 0; i < 2; i++)
+            {
+                var segment = Path.Combine(dir, $"seg-{i:000}.flv");
+                int code = await BBDownMuxer.ProcessRunner.RunAsync(new ExternalProcessSpec
+                {
+                    FileName = ffmpeg,
+                    Arguments = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "flv", segment],
+                    TimeoutMs = 10000,
+                    OnStandardError = _ => { }
+                }, timeout.Token);
+                Assert.Equal(0, code);
+                segments.Add(segment);
+            }
+            var output = Path.Combine(dir, "merged.flv");
+
+            bool ok = await LiveStreamUtil.ConcatSegmentsAsync(segments, output, timeout.Token);
+            Assert.True(ok, "真实 FFmpeg 合并两个独立 FLV 段时必须保留所有音视频帧");
+            Assert.True(new FileInfo(output).Length > 0);
+            Assert.All(segments, segment => Assert.True(File.Exists(segment), "验证阶段应保留源段"));
+        }
+        finally
+        {
+            BBDownMuxer.FFMPEG = originalTool;
+            BBDownMuxer.ProcessRunner = originalRunner;
+            Directory.Delete(dir, true);
+        }
+    }
+
     internal static string? IntegrationTool(string name)
     {
         var path = ExternalToolHelper.FindExecutable(name);
