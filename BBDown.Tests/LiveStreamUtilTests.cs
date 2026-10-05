@@ -438,10 +438,11 @@ public class LiveStreamUtilTests
         {
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
-            byte[] frame = [0x97, 0x02, 0, 0, 0, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0x26];
-            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
-            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
-            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+            byte[] config = BuildEnhancedVideoConfig("hvc1");
+            byte[] frame = [0x97, 0x02, 0, 0, 0, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 0, 1, 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(config, frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(config, frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(config, frame, frame));
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
 
@@ -464,10 +465,11 @@ public class LiveStreamUtilTests
         {
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
-            byte[] frame = [0x93, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0x26];
-            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
-            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
-            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+            byte[] config = BuildEnhancedVideoConfig("hvc1");
+            byte[] frame = [0x93, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 1, 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(config, frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(config, frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(config, frame, frame));
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
 
@@ -565,10 +567,11 @@ public class LiveStreamUtilTests
         {
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
-            byte[] frame = [0x96, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0x26];
-            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(frame));
-            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(frame));
-            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(frame, frame));
+            byte[] config = BuildEnhancedVideoConfig("hvc1");
+            byte[] frame = [0x96, 0x01, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 0, 0, 1, 0x26];
+            await File.WriteAllBytesAsync(seg1, BuildEnhancedVideoFlv(config, frame));
+            await File.WriteAllBytesAsync(seg2, BuildEnhancedVideoFlv(config, frame));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildEnhancedVideoFlv(config, frame, frame));
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
 
@@ -635,21 +638,41 @@ public class LiveStreamUtilTests
         }
     }
 
-    [Fact]
-    public async Task ConcatSegments_MalformedAvcCodedFrame_IsRejected()
+    [Theory]
+    [InlineData(7, new byte[] { 1 })] // legacy AVC: incomplete NALU length field
+    [InlineData(12, new byte[] { 1 })] // legacy HEVC: incomplete NALU length field
+    [InlineData(7, new byte[] { 0, 0, 0, 1 })] // legacy AVC: NALU length has no payload
+    [InlineData(12, new byte[] { 0, 0, 0, 1 })] // legacy HEVC: NALU length has no payload
+    [InlineData(0, new byte[] { 0x93, (byte)'a', (byte)'v', (byte)'c', (byte)'1', 0, 0, 1 })] // Enhanced AVC CodedFramesX: incomplete NALU length field
+    [InlineData(0, new byte[] { 0x91, (byte)'a', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 1 })] // Enhanced AVC CodedFrames: incomplete NALU length field after CTS
+    [InlineData(0, new byte[] { 0x91, (byte)'a', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 0, 1 })] // Enhanced AVC NALU length has no payload
+    [InlineData(0, new byte[] { 0x91, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 1 })] // Enhanced HEVC CodedFrames: incomplete NALU length field after CTS
+    [InlineData(0, new byte[] { 0x93, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 1 })] // Enhanced HEVC CodedFramesX: incomplete NALU length field
+    [InlineData(0, new byte[] { 0x91, (byte)'v', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 1 })] // Enhanced VVC CodedFrames: incomplete NALU length field after CTS
+    [InlineData(0, new byte[] { 0x93, (byte)'v', (byte)'v', (byte)'c', (byte)'1', 0, 0, 1 })] // Enhanced VVC CodedFramesX: incomplete NALU length field
+    public async Task ConcatSegments_TruncatedLengthPrefixedVideoPayload_IsRejected(int codecId, byte[] packet)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "live-malformed-avc-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "live-truncated-length-prefix-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             var segment = Path.Combine(dir, "seg-000.flv");
-            var flv = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
-            flv.AddRange(BuildFlvTag(9, [0x17, 1], [])); // marker only: missing CTS and NALU bytes
-            await File.WriteAllBytesAsync(segment, [.. flv]);
+            if (codecId == 0)
+            {
+                string fourCc = System.Text.Encoding.ASCII.GetString(packet, 1, 4);
+                var fourCcBytes = System.Text.Encoding.ASCII.GetBytes(fourCc);
+                var config = BuildEnhancedVideoConfig(fourCc);
+                byte[] validFrame = packet[0] == 0x93
+                    ? [0x93, .. fourCcBytes, 0, 0, 0, 1, 0x26]
+                    : [0x91, .. fourCcBytes, 0, 0, 0, 0, 0, 0, 1, 0x26];
+                await File.WriteAllBytesAsync(segment, BuildEnhancedVideoFlv(config, packet, validFrame));
+            }
+            else
+                await File.WriteAllBytesAsync(segment, BuildLegacyPacketizedFlv(codecId, [packet, [0, 0, 0, 1, 0x26]]));
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([segment], Path.Combine(dir, "out.flv"), CancellationToken.None);
 
-            Assert.False(ok);
+            Assert.False(ok, $"应拒绝不完整的视频长度字段: {Convert.ToHexString(packet)}");
         }
         finally
         {
@@ -1409,6 +1432,11 @@ public class LiveStreamUtilTests
         chunk[tagStart] = 9; // 视频标签
         chunk[tagStart + 11] = (byte)((videoFrameType << 4) | 7); // AVC frame type and codec id
         chunk[tagStart + 12] = 1; // AVC NALU packet
+        int naluPayloadLength = payloadLength - 9;
+        chunk[tagStart + 16] = (byte)(naluPayloadLength >> 24);
+        chunk[tagStart + 17] = (byte)(naluPayloadLength >> 16);
+        chunk[tagStart + 18] = (byte)(naluPayloadLength >> 8);
+        chunk[tagStart + 19] = (byte)naluPayloadLength;
         chunk[tagStart + 1] = (byte)(payloadLength >> 16);
         chunk[tagStart + 2] = (byte)(payloadLength >> 8);
         chunk[tagStart + 3] = (byte)payloadLength;
@@ -1430,10 +1458,29 @@ public class LiveStreamUtilTests
 
     private static byte[] BuildLegacyPacketizedFlv(int codecId, int frames)
     {
+        byte[] framePayload = codecId == 9 ? [0x26] : [0, 0, 0, 1, 0x26];
+        return BuildLegacyPacketizedFlv(codecId, Enumerable.Repeat(framePayload, frames).ToArray());
+    }
+
+    private static byte[] BuildLegacyPacketizedFlv(int codecId, params byte[][] framePayloads)
+    {
         var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
-        data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0], [])); // sequence header
-        for (int i = 0; i < frames; i++)
-            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 1, 0, 0, 0, 0x26], [])); // coded packet
+        if (codecId == 9)
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0], [])); // sequence header
+        else if (codecId == 7)
+        {
+            byte[] avcConfig = [1, 0x64, 0, 0x1F, 0xFF];
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, .. avcConfig], [])); // avcC prefix
+        }
+        else
+        {
+            var hevcConfig = new byte[23];
+            hevcConfig[0] = 1;
+            hevcConfig[21] = 0xFF; // lengthSizeMinusOne = 3
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, .. hevcConfig], [])); // hvcC prefix
+        }
+        foreach (var framePayload in framePayloads)
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 1, 0, 0, 0, .. framePayload], [])); // coded packet
         return data.ToArray();
     }
 
@@ -1453,6 +1500,20 @@ public class LiveStreamUtilTests
         return data.ToArray();
     }
 
+    private static byte[] BuildEnhancedVideoConfig(string fourCc)
+    {
+        if (fourCc == "vvc1")
+            return [0x90, (byte)'v', (byte)'v', (byte)'c', (byte)'1', 0xFE];
+
+        byte[] config = new byte[27];
+        config[0] = 0x90;
+        System.Text.Encoding.ASCII.GetBytes(fourCc, config.AsSpan(1, 4));
+        config[5] = 1;
+        config[9] = 0xFF;
+        config[26] = 0xFF;
+        return config;
+    }
+
     private static byte[] BuildFilteredFlvTag(byte[] payload)
     {
         var tag = BuildFlvTag(0x29, payload, []);
@@ -1464,11 +1525,11 @@ public class LiveStreamUtilTests
     {
         var data = new List<byte> { (byte)'F', (byte)'L', (byte)'V', 1, 1, 0, 0, 0, 9, 0, 0, 0, 0 };
         data.AddRange(BuildFlvTag(8, [0x90, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 1], [])); // Enhanced Audio SequenceStart
-        data.AddRange(BuildFlvTag(9, [0x90, (byte)'h', (byte)'v', (byte)'c', (byte)'1'], [])); // Enhanced Video SequenceStart
+        data.AddRange(BuildFlvTag(9, BuildEnhancedVideoConfig("hvc1"), [])); // Enhanced Video SequenceStart
         for (int i = 0; i < frames; i++)
         {
             data.AddRange(BuildFlvTag(8, [0x91, (byte)'O', (byte)'p', (byte)'u', (byte)'s', 2], [])); // Enhanced Audio CodedFrames
-            data.AddRange(BuildFlvTag(9, [0x91, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 2], [])); // Enhanced Video CodedFrames
+            data.AddRange(BuildFlvTag(9, [0x91, (byte)'h', (byte)'v', (byte)'c', (byte)'1', 0, 0, 0, 0, 0, 0, 1, 0x26], [])); // Enhanced Video CodedFrames
         }
         return data.ToArray();
     }

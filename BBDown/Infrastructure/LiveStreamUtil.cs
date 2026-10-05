@@ -592,7 +592,7 @@ public static class LiveStreamUtil
     }
 
     /// <summary>
-    /// 逐标签检查 FLV 容器并统计音视频帧，只读取负载开头的编解码标志。
+    /// 逐标签检查 FLV 容器并统计音视频帧，同时检查编解码包头和 NALU 长度边界。
     /// concat 会去掉后续分段重复的 AAC/AVC/Enhanced FLV 序列头（可能还有流结束标签），
     /// 因此不能把所有音视频标签都计入预期帧数。元数据标签同样由 FFmpeg 改写。
     /// </summary>
@@ -667,7 +667,73 @@ public static class LiveStreamUtil
         return (packetType is 0 or 1 or 2 or 4) && (packetType != 1 || file.Position < payloadEnd);
     }
 
-    private static bool TryGetEnhancedVideoPacket(FileStream file, byte firstByte, byte secondByte, long payloadEnd, out bool isMediaFrame)
+    private static bool TryGetNaluLengthFieldSize(FileStream file, long payloadEnd, string fourCc, out int lengthFieldSize)
+    {
+        lengthFieldSize = 0;
+        long configStart = file.Position;
+        if (fourCc == "avc1")
+        {
+            if (payloadEnd - configStart < 5) return false;
+            file.Position = configStart;
+            if (file.ReadByte() != 1) return false;
+            file.Position = configStart + 4;
+            int lengthSizeByte = file.ReadByte();
+            if (lengthSizeByte < 0) return false;
+            lengthFieldSize = (lengthSizeByte & 0x03) + 1;
+            if (lengthFieldSize == 3) return false; // Reserved by AVCDecoderConfigurationRecord.
+        }
+        else if (fourCc == "hvc1")
+        {
+            if (payloadEnd - configStart < 22) return false;
+            file.Position = configStart;
+            if (file.ReadByte() != 1) return false;
+            file.Position = configStart + 21;
+            int lengthSizeByte = file.ReadByte();
+            if (lengthSizeByte < 0) return false;
+            lengthFieldSize = (lengthSizeByte & 0x03) + 1;
+            if (lengthFieldSize == 3) return false; // Reserved by HEVCDecoderConfigurationRecord.
+        }
+        else if (fourCc == "vvc1")
+        {
+            if (payloadEnd - configStart < 1) return false;
+            int lengthSizeByte = file.ReadByte();
+            if (lengthSizeByte < 0 || (lengthSizeByte & 0xF8) != 0xF8) return false;
+            lengthFieldSize = ((lengthSizeByte >> 1) & 0x03) + 1;
+        }
+        else
+            return false;
+
+        file.Position = payloadEnd;
+        return true;
+    }
+
+    private static bool TryHasCompleteLengthPrefixedUnits(FileStream file, long payloadEnd, int lengthFieldSize)
+    {
+        if (lengthFieldSize is < 1 or > 4) return false;
+
+        bool hasUnit = false;
+        while (file.Position < payloadEnd)
+        {
+            if (payloadEnd - file.Position < lengthFieldSize) return false;
+
+            uint unitLength = 0;
+            for (int i = 0; i < lengthFieldSize; i++)
+            {
+                int value = file.ReadByte();
+                if (value < 0) return false;
+                unitLength = (unitLength << 8) | (uint)value;
+            }
+            if (unitLength == 0 || unitLength > payloadEnd - file.Position) return false;
+
+            file.Position += unitLength;
+            hasUnit = true;
+        }
+
+        return hasUnit;
+    }
+
+    private static bool TryGetEnhancedVideoPacket(FileStream file, byte firstByte, byte secondByte, long payloadEnd,
+        ref int avcLengthFieldSize, ref int hevcLengthFieldSize, ref int vvcLengthFieldSize, out bool isMediaFrame)
     {
         isMediaFrame = false;
         int packetType = firstByte & 0x0F;
@@ -728,19 +794,46 @@ public static class LiveStreamUtil
         bool knownFourCc = hasCompositionTime || fourCc.SequenceEqual("vp08"u8) ||
             fourCc.SequenceEqual("vp09"u8) || fourCc.SequenceEqual("av01"u8) || fourCc.SequenceEqual("mp4v"u8);
         if (!knownFourCc && packetType is not (4 or 5)) return false;
-        if (packetType == 1)
+        if (packetType == 0 && file.Position < payloadEnd)
+        {
+            if (fourCc.SequenceEqual("avc1"u8))
+            {
+                if (!TryGetNaluLengthFieldSize(file, payloadEnd, "avc1", out avcLengthFieldSize)) return false;
+            }
+            else if (fourCc.SequenceEqual("hvc1"u8))
+            {
+                if (!TryGetNaluLengthFieldSize(file, payloadEnd, "hvc1", out hevcLengthFieldSize)) return false;
+            }
+            else if (fourCc.SequenceEqual("vvc1"u8))
+            {
+                if (!TryGetNaluLengthFieldSize(file, payloadEnd, "vvc1", out vvcLengthFieldSize)) return false;
+            }
+        }
+        else if (packetType == 1)
         {
             if (hasCompositionTime)
             {
                 if (payloadEnd - file.Position <= 3) return false;
                 file.Position += 3;
             }
-            isMediaFrame = file.ReadByte() >= 0;
+            if (hasCompositionTime)
+            {
+                int lengthFieldSize = fourCc.SequenceEqual("avc1"u8) ? avcLengthFieldSize :
+                    fourCc.SequenceEqual("hvc1"u8) ? hevcLengthFieldSize :
+                    fourCc.SequenceEqual("vvc1"u8) ? vvcLengthFieldSize : 0;
+                if (!TryHasCompleteLengthPrefixedUnits(file, payloadEnd, lengthFieldSize)) return false;
+                isMediaFrame = true;
+            }
+            else
+                isMediaFrame = file.ReadByte() >= 0;
         }
         else if (packetType == 3)
         {
             if (!hasCompositionTime) return false;
-            isMediaFrame = file.Position < payloadEnd; // CodedFramesX
+            int lengthFieldSize = fourCc.SequenceEqual("avc1"u8) ? avcLengthFieldSize :
+                fourCc.SequenceEqual("hvc1"u8) ? hevcLengthFieldSize : vvcLengthFieldSize;
+            if (!TryHasCompleteLengthPrefixedUnits(file, payloadEnd, lengthFieldSize)) return false;
+            isMediaFrame = true; // CodedFramesX has no composition time
         }
 
         return true;
@@ -756,6 +849,11 @@ public static class LiveStreamUtil
 
             long audio = 0;
             long video = 0;
+            int legacyAvcLengthFieldSize = 4;
+            int legacyHevcLengthFieldSize = 4;
+            int avcLengthFieldSize = 4;
+            int hevcLengthFieldSize = 4;
+            int vvcLengthFieldSize = 4;
             Span<byte> tag = stackalloc byte[11];
             Span<byte> prefix = stackalloc byte[2];
             Span<byte> previousSize = stackalloc byte[4];
@@ -796,7 +894,8 @@ public static class LiveStreamUtil
                     }
                     else if ((prefix[0] & 0x80) != 0)
                     {
-                        if (!TryGetEnhancedVideoPacket(file, prefix[0], prefix[1], payloadEnd, out isMediaFrame))
+                        if (!TryGetEnhancedVideoPacket(file, prefix[0], prefix[1], payloadEnd,
+                            ref avcLengthFieldSize, ref hevcLengthFieldSize, ref vvcLengthFieldSize, out isMediaFrame))
                             return false;
                     }
                     else
@@ -807,14 +906,27 @@ public static class LiveStreamUtil
                         {
                             isMediaFrame = false;
                             if (prefix[1] is not (0 or 1 or 2)) return false;
-                            if (prefix[1] == 1)
+                            if (prefix[1] == 0 && (codecId is 7 or 12) && file.Position < payloadEnd)
+                            {
+                                string fourCc = codecId == 7 ? "avc1" : "hvc1";
+                                if (!TryGetNaluLengthFieldSize(file, payloadEnd, fourCc, out int lengthFieldSize)) return false;
+                                if (codecId == 7) legacyAvcLengthFieldSize = lengthFieldSize;
+                                else legacyHevcLengthFieldSize = lengthFieldSize;
+                                isMediaFrame = false;
+                            }
+                            else if (prefix[1] == 1)
                             {
                                 if (codecId == 9)
                                 {
                                     if (payloadLength < 6) return false; // MPEG4 packet type + composition time + coded payload
                                 }
-                                else if (payloadLength < 6)
-                                    return false; // AVC/HEVC packet type + composition time + coded payload
+                                else
+                                {
+                                    if (payloadLength < 6) return false; // packet type + composition time + NALU payload
+                                    file.Position += 3; // composition time
+                                    int lengthFieldSize = codecId == 7 ? legacyAvcLengthFieldSize : legacyHevcLengthFieldSize;
+                                    if (!TryHasCompleteLengthPrefixedUnits(file, payloadEnd, lengthFieldSize)) return false;
+                                }
                                 isMediaFrame = true;
                             }
                         }
