@@ -608,23 +608,25 @@ public class LiveStreamUtilTests
         }
     }
 
-    [Fact]
-    public async Task ConcatSegments_LegacyDisposableInterframeMissingFromOutput_ReturnsFalse()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task ConcatSegments_LegacyVideoFrameMissingFromOutput_ReturnsFalse(int missingFrameType)
     {
         var original = BBDownMuxer.ProcessRunner;
-        var dir = Path.Combine(Path.GetTempPath(), "live-disposable-frames-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "live-missing-legacy-frame-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             var seg1 = Path.Combine(dir, "seg-000.flv");
             var seg2 = Path.Combine(dir, "seg-001.flv");
-            await File.WriteAllBytesAsync(seg1, BuildLegacyVideoFlv(1, 3));
-            await File.WriteAllBytesAsync(seg2, BuildLegacyVideoFlv(3));
-            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildLegacyVideoFlv(1, 3));
+            await File.WriteAllBytesAsync(seg1, BuildLegacyVideoFlv(1, missingFrameType));
+            await File.WriteAllBytesAsync(seg2, BuildLegacyVideoFlv(1, missingFrameType));
+            BBDownMuxer.ProcessRunner = new FakeProcessRunner(exitCode: 0, outputContent: BuildLegacyVideoFlv(1, 1, missingFrameType));
 
             var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], Path.Combine(dir, "out.flv"), CancellationToken.None);
 
-            Assert.False(ok); // 缺少一个 disposable interframe 也必须检测到
+            Assert.False(ok); // 漏掉 disposable interframe 或 generated keyframe 都必须检测到
         }
         finally
         {

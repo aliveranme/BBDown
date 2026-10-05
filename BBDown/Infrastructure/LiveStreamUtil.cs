@@ -819,7 +819,7 @@ public static class LiveStreamUtil
                             }
                         }
                         else if (codecId is 1 or 2 or 3 or 4 or 5 or 6)
-                            isMediaFrame = frameType is 1 or 2 || (codecId == 2 && frameType == 3); // H.263 disposable interframe
+                            isMediaFrame = frameType is 1 or 2 or 4 || (codecId == 2 && frameType == 3); // generated keyframe; H.263 disposable interframe
                         else
                             return false; // 未知的视频编码包型不用于推断完整性
                     }
