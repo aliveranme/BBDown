@@ -1470,14 +1470,14 @@ public class LiveStreamUtilTests
         else if (codecId == 7)
         {
             byte[] avcConfig = [1, 0x64, 0, 0x1F, 0xFF];
-            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, .. avcConfig], [])); // avcC prefix
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, 0, 0, 0, .. avcConfig], [])); // avcC prefix
         }
         else
         {
             var hevcConfig = new byte[23];
             hevcConfig[0] = 1;
             hevcConfig[21] = 0xFF; // lengthSizeMinusOne = 3
-            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, .. hevcConfig], [])); // hvcC prefix
+            data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 0, 0, 0, 0, .. hevcConfig], [])); // hvcC prefix
         }
         foreach (var framePayload in framePayloads)
             data.AddRange(BuildFlvTag(9, [(byte)(0x10 | codecId), 1, 0, 0, 0, .. framePayload], [])); // coded packet

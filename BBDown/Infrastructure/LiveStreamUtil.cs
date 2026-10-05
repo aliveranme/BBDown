@@ -906,8 +906,10 @@ public static class LiveStreamUtil
                         {
                             isMediaFrame = false;
                             if (prefix[1] is not (0 or 1 or 2)) return false;
-                            if (prefix[1] == 0 && (codecId is 7 or 12) && file.Position < payloadEnd)
+                            if (prefix[1] == 0 && (codecId is 7 or 12))
                             {
+                                if (payloadEnd - file.Position < 3) return false;
+                                file.Position += 3; // sequence header composition time
                                 string fourCc = codecId == 7 ? "avc1" : "hvc1";
                                 if (!TryGetNaluLengthFieldSize(file, payloadEnd, fourCc, out int lengthFieldSize)) return false;
                                 if (codecId == 7) legacyAvcLengthFieldSize = lengthFieldSize;
