@@ -98,8 +98,8 @@ BBDown [选项] <URL或标识符>
 | | `--aria2c-args` | `string ("")` | 传给 aria2c 的额外命令行参数 |
 | | `--force-http` | `bool (false)` | 媒体流强制使用 HTTP 协议替代 HTTPS |
 | | `--insecure` | `bool (false)` | 跳过 SSL/TLS 证书有效性校验（抓包调试用） |
-| | `--upos-host` | `string ("")` | 手动指定 CDN / UPOS 流媒体主机域名 |
-| | `--force-replace-host` | `bool (true)` | 强制将边缘 PCDN 域名替换为骨干 CDN 域名 |
+| | `--upos-host` | `string ("")` | 手动指定 CDN / UPOS 流媒体主机域名（该主机返回 404 时自动回退原始地址重试一次） |
+| | `--force-replace-host` | `bool (true)` | 强制将边缘 PCDN 域名替换为骨干 CDN 域名（替换目标返回 404 时自动回退原始地址重试一次） |
 | | `--allow-pcdn` | `bool (false)` | 允许使用边缘 PCDN 节点（不自动替换） |
 | | `--save-archives-to-file`| `bool (false)`| 在程序目录维护 `BBDown.archives` 记录已下载 aid |
 | | `--notify-webhook` | `string?` | 下载完成后发送 HTTP POST 结果通知 |

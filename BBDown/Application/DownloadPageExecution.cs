@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -100,6 +101,11 @@ internal sealed class DownloadPageExecutor
         Logger.Log("已选择的流:");
         _services.PrintSelectedTrackInfo(selectedVideo, selectedAudio, page.dur);
 
+        // 记录替换前的原始地址：HandlePcdn 换成备用/自定义 host 后若目标返回 404
+        //（镜像 CDN 不承载该内容，实测大会员影片整片命中），下载阶段回退到原地址重试。
+        var originalVideoUrl = selectedVideo?.baseUrl;
+        var originalAudioUrl = selectedAudio?.baseUrl;
+
         if (options.ForceReplaceHost && string.IsNullOrEmpty(options.UposHost))
             options.UposHost = _services.BackupHost;
 
@@ -122,17 +128,15 @@ internal sealed class DownloadPageExecutor
                 options.UseMP4box = true;
             }
             Logger.Log($"开始下载P{page.index}视频...");
-            await _services.DownloadTrackAsync(
-                selectedVideo.baseUrl, videoPath, context.DownloadConfig,
-                context.CancellationToken);
+            await DownloadTrackWithHostFallbackAsync(
+                originalVideoUrl, selectedVideo.baseUrl, videoPath, context);
         }
 
         if (selectedAudio is not null)
         {
             Logger.Log($"开始下载P{page.index}音频...");
-            await _services.DownloadTrackAsync(
-                selectedAudio.baseUrl, audioPath, context.DownloadConfig,
-                context.CancellationToken);
+            await DownloadTrackWithHostFallbackAsync(
+                originalAudioUrl, selectedAudio.baseUrl, audioPath, context);
         }
 
         var audioMaterial = context.AudioMaterial;
@@ -343,6 +347,40 @@ internal sealed class DownloadPageExecutor
         if (!string.IsNullOrWhiteSpace(savePath)) context.RelatedTask?.AddSavePath(savePath);
         return true;
     }
+
+    /// <summary>
+    /// 下载单个轨道；若 HandlePcdn 替换过 host 且替换后的地址返回 404，回退到替换前的
+    /// 原始地址重试一次。备用镜像/手动指定的 CDN 不承载某些内容（实测大会员影片在
+    /// backup host 上整片 404），替换反而把原本可下载的流换坏，且页面级重试每轮都会
+    /// 重新替换、永不恢复。仅"确实被替换过 + 确为 404"时回退一次；原地址同样失败时
+    /// 异常按原路径向上传播，交既有重试/失败处理。
+    /// </summary>
+    private async Task DownloadTrackWithHostFallbackAsync(
+        string? originalUrl,
+        string currentUrl,
+        string filePath,
+        PageExecutionContext context)
+    {
+        try
+        {
+            await _services.DownloadTrackAsync(currentUrl, filePath, context.DownloadConfig, context.CancellationToken);
+        }
+        catch (Exception ex) when (ShouldFallbackToOriginalHost(originalUrl, currentUrl, ex))
+        {
+            Logger.LogWarn($"替换后的服务器({DescribeHost(currentUrl)})返回404，改用原始地址({DescribeHost(originalUrl!)})重新下载……");
+            await _services.DownloadTrackAsync(originalUrl!, filePath, context.DownloadConfig, context.CancellationToken);
+        }
+    }
+
+    /// <summary>回退条件：确为 HTTP 404，且地址确实被 HandlePcdn 替换过（前后不同）。</summary>
+    internal static bool ShouldFallbackToOriginalHost(string? originalUrl, string currentUrl, Exception ex)
+        => ex is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
+           && originalUrl is not null
+           && !string.Equals(originalUrl, currentUrl, StringComparison.Ordinal);
+
+    /// <summary>日志用主机名：URL 解析失败时原样返回（仅用于展示，不影响下载流程）。</summary>
+    private static string DescribeHost(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
 
     internal static int ClampRoleAudioIndex(int audioIndex, int audioCount)
         => audioCount <= 0 ? -1 : Math.Min(Math.Max(audioIndex, 0), audioCount - 1);
