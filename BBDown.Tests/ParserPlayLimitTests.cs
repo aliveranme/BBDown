@@ -20,6 +20,23 @@ public class ParserPlayLimitTests
         Assert.Contains("play_detail=PLAY_NONE", ex.Message);
     }
 
+    // TV 接口（playurltv / x/tv/playurl）顶层 result 是历史遗留字符串（线上实测 "suee"），
+    // 非对象 result 下根本没有 play_check 可言：必须原样放行，不能让 TryGetProperty
+    // 在非对象元素上抛 JsonElementHasWrongType（曾致 TV 模式番剧/电影下载全量失败）。
+    [Theory]
+    [InlineData("""{"code":0,"result":"suee","durl":[]}""")]
+    [InlineData("""{"code":0,"result":null}""")]
+    [InlineData("""{"code":0,"result":123}""")]
+    [InlineData("""{"code":0,"result":["a"]}""")]
+    [InlineData("""{"code":0,"result":{"no_play_check":true}}""")]
+    [InlineData("""{"code":0}""")]
+    [InlineData("""[1,2,3]""")]
+    public void ThrowIfPlayLimited_NonObjectResult_DoesNotThrow(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        Parser.ThrowIfPlayLimited(doc.RootElement); // 不应抛异常
+    }
+
     [Fact]
     public void ThrowIfBizError_NonZeroCode_ThrowsReadableMessage()
     {

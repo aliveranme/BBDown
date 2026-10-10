@@ -6,10 +6,12 @@
 
 ### 修复
 
+- **TV 模式番剧/电影下载不再在解析第一步全量失败（`JsonElementHasWrongType, Object, String`）**：TV 播放接口（`pgc/player/api/playurltv`）顶层 `result` 是历史遗留字符串（线上实测固定值 `"suee"`），而 `play_check` 播放限制校验假设它是对象——对字符串元素调 `TryGetProperty` 会抛 `InvalidOperationException`（NativeAOT 构建下消息呈现为资源键 `JsonElementHasWrongType, Object, String`，实测电影 `ep6379512` 即命于此），令 `--use-tv-api` 下所有番剧/电影在首个 playurl 响应后立即失败、3 次重试后整单报"共 1 个分P下载失败"。现仅当 `result` 确为对象（web 番剧接口形状）时才检查 `play_check`，非对象直接放行；`root` 非对象的退化响应同样不再抛异常。
 - **替换下载服务器后遇 404 自动回退原始地址**：备用 host 不承载某些内容（实测大会员影片的 APP 接口流在 `upos-sz-mirrorcoso1.bilivideo.com` 上整片 404），而 `--force-replace-host`（默认开启）、`--upos-host`、PCDN/海外源替换都会把原本可下载的流换过去，页面级重试每轮重新替换、永不恢复，最终整单失败。现替换后的地址返回 404 且确实由替换逻辑改过 host 时，自动改回替换前的原始地址重试一次并打印回退告警；原地址同样失败则按既有重试/失败路径处理，非 404 失败（可能瞬时）行为不变。
 
 ### 工程与验证
 
+- 新增回归测试：TV 番剧 durl 的真实响应夹具（含字符串 `result` 与 `qn_extras`/`durl`/`support_formats` 等生产字段，媒体 URL 已脱敏）走 `ExtractTracksAsync` 全链路解析，覆盖首轮 qn=0 与最高清晰度重发 qn=127 两轮；`ThrowIfPlayLimited` 对字符串/null/数字/数组/缺失 `result` 与非对象根的放行矩阵。
 - 新增回归测试：host 替换 404 回退的判定矩阵（404+已替换命中；未替换 / 原地址缺失 / 非 404 / 无状态码 / 非 HTTP 异常不命中）与页面下载接线（视频/音频分别回退后成功；原地址仍 404 时仅回退一次、异常按原路径传播；未替换与非 404 均不改变既有行为）。
 
 ## [1.7.5] - 2026-10-09
