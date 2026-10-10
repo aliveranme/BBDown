@@ -298,6 +298,40 @@ public class ParserFixtureTests
         }, s => s with { TvHost = $"http://127.0.0.1:{server.Port}" });
     }
 
+    // ── F07b：真实 TV PGC durl 响应（顶层 result 为固定字符串 "suee"）──
+    // 回归：ThrowIfPlayLimited 曾对非对象 result 调 TryGetProperty 抛 JsonElementHasWrongType，
+    // 令 TV 模式下番剧/电影（/pgc/player/api/playurltv）的所有下载在解析第一步即失败。
+    // 夹具取自线上真实响应（仅脱敏媒体 URL），键名与类型和产线一致。
+
+    [Fact]
+    public async Task TvPgcDurl_StringResult_StillParsesTracks()
+    {
+        using var server = new FakeBilibiliApiServer();
+        var path = "/pgc/player/api/playurltv";
+        server.Register(path, LoadFixture("tv-pgc-durl-suee-result.json"));
+        await WithFakeApiAsync(server, async () =>
+        {
+            var result = await ExtractAsync("ep:6379512", "117290825680097", "42079096628", epId: "6379512", tvApi: true);
+
+            // 首轮 qn=0 + durl 最高清晰度重发 qn=127（两轮响应相同 → 接管后内容不变）
+            Assert.Equal(2, server.Requests.Count);
+            Assert.All(server.Requests, r => Assert.Equal(path, r.Path));
+            Assert.Equal("0", FakeBilibiliApiServer.GetQueryValue(server.Requests[0].Query, "qn"));
+            Assert.Equal("127", FakeBilibiliApiServer.GetQueryValue(server.Requests[1].Query, "qn"));
+
+            Assert.Equal(["https://upos.example.com/movie-seg1.mp4"], result.Clips);
+            Assert.Equal(["80", "64", "32", "16"], result.Dfns);
+            var v = Assert.Single(result.VideoTracks);
+            Assert.Equal("32", v.id);
+            Assert.Equal("480P 清晰", v.dfn);
+            Assert.Equal("AVC", v.codecs);
+            Assert.Equal(360, v.dur);
+            Assert.Equal(23305934, v.size);
+            // 试看片段：durl 累加时长（360s）即本次实际可得的内容长度
+            Assert.Equal(360, result.ActualDurationSec);
+        }, s => s with { TvHost = $"http://127.0.0.1:{server.Port}" });
+    }
+
     // ── F08：DRM dash（bilidrm_uri 提取 + 非法 kid 告警保持空）──
 
     [Fact]

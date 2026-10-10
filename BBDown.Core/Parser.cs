@@ -871,7 +871,18 @@ public static partial class Parser
 
     internal static void ThrowIfPlayLimited(JsonElement root)
     {
+        if (root.ValueKind != JsonValueKind.Object)
+            return;
+
         if (!root.TryGetProperty("result", out var result))
+            return;
+
+        // 仅 web 番剧接口的 result 是承载 play_check 的对象；TV 接口（playurltv /
+        // x/tv/playurl）顶层 result 是历史遗留字符串（如 "suee"），非对象没有
+        // play_check 可言，必须直接放行——对非对象元素调 TryGetProperty 会抛
+        // JsonElementHasWrongType（NativeAOT 下呈现为资源键），曾令 TV 模式
+        // 番剧/电影的所有下载在解析第一步即失败。
+        if (result.ValueKind != JsonValueKind.Object)
             return;
 
         if (!result.TryGetProperty("play_check", out var playCheck))

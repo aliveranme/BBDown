@@ -1,0 +1,154 @@
+{
+  "accept_format": "mp4,mp4,mp4,mp4",
+  "code": 0,
+  "seek_param": "start",
+  "is_preview": 1,
+  "fnval": 4048,
+  "video_project": false,
+  "fnver": 0,
+  "type": "MP4",
+  "bp": 0,
+  "result": "suee",
+  "seek_type": "second",
+  "qn_extras": [
+    {
+      "attribute": 0,
+      "icon": "",
+      "icon2": "",
+      "need_login": false,
+      "need_vip": false,
+      "qn": 80
+    },
+    {
+      "attribute": 0,
+      "icon": "",
+      "icon2": "",
+      "need_login": false,
+      "need_vip": false,
+      "qn": 64
+    },
+    {
+      "attribute": 0,
+      "icon": "",
+      "icon2": "",
+      "need_login": false,
+      "need_vip": false,
+      "qn": 32
+    },
+    {
+      "attribute": 0,
+      "icon": "",
+      "icon2": "",
+      "need_login": false,
+      "need_vip": false,
+      "qn": 16
+    }
+  ],
+  "vip_type": 2,
+  "accept_watermark": [
+    false,
+    false,
+    false,
+    false
+  ],
+  "from": "local",
+  "video_codecid": 7,
+  "record_info": {
+    "record_icon": "",
+    "record": "电审进影字【99】第367号"
+  },
+  "can_watch_reason": 0,
+  "durl": [
+    {
+      "size": 23305934,
+      "ahead": "",
+      "length": 360151,
+      "vhead": "",
+      "backup_url": [
+        "https://upos-sz-mirrorcos.example.com/movie-seg1.mp4"
+      ],
+      "url": "https://upos.example.com/movie-seg1.mp4",
+      "order": 1,
+      "md5": ""
+    }
+  ],
+  "is_drm": true,
+  "no_rexcode": 0,
+  "format": "mp4",
+  "support_formats": [
+    {
+      "display_desc": "1080P",
+      "limit_watch_reason": 0,
+      "report_params": "{}",
+      "superscript": "",
+      "format": "mp4",
+      "description": "高清 1080P",
+      "attribute": 0,
+      "quality": 80,
+      "new_description": "1080P 高清",
+      "can_watch_qn_reason": 0
+    },
+    {
+      "display_desc": "720P",
+      "limit_watch_reason": 0,
+      "report_params": "{}",
+      "superscript": "",
+      "format": "mp4",
+      "description": "高清 720P",
+      "attribute": 0,
+      "quality": 64,
+      "new_description": "720P 准高清",
+      "can_watch_qn_reason": 0
+    },
+    {
+      "display_desc": "480P",
+      "limit_watch_reason": 0,
+      "report_params": "{}",
+      "superscript": "",
+      "format": "mp4",
+      "description": "清晰 480P",
+      "attribute": 0,
+      "quality": 32,
+      "new_description": "480P 标清",
+      "can_watch_qn_reason": 0
+    },
+    {
+      "display_desc": "360P",
+      "limit_watch_reason": 0,
+      "report_params": "{}",
+      "superscript": "",
+      "format": "mp4",
+      "description": "流畅 360P",
+      "attribute": 0,
+      "quality": 16,
+      "new_description": "360P 流畅",
+      "can_watch_qn_reason": 0
+    }
+  ],
+  "message": "Success",
+  "accept_quality": [
+    80,
+    64,
+    32,
+    16
+  ],
+  "quality": 32,
+  "timelength": 6259156,
+  "has_paid": false,
+  "vip_risk": {
+    "allow": false,
+    "device_status": 0,
+    "reason": 0,
+    "type": 0
+  },
+  "vip_status": 1,
+  "error_code": -10403,
+  "clip_info_list": [],
+  "accept_description": [
+    "高清 1080P",
+    "高清 720P",
+    "清晰 480P",
+    "流畅 360P"
+  ],
+  "status": 13
+}
