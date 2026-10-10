@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.7.6] - 2026-10-10
 
 ### 修复
 
@@ -625,7 +625,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.5...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.6...HEAD
+[1.7.6]: https://github.com/AliverAnme/BBDown/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AliverAnme/BBDown/compare/v1.7.4...v1.7.5
 [1.7.4]: https://github.com/AliverAnme/BBDown/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/AliverAnme/BBDown/compare/v1.7.2...v1.7.3
