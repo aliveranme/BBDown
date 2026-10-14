@@ -2,11 +2,11 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.7.7] - 2026-10-14
 
 ### 新增
 
-- **`sub check --delay-per-item <秒>`：订阅检查的节流间隔（#107）**：`sub check` 此前没有任何节流参数——`--delay-per-page` / `--retry-count` / `--retry-delay` 只声明在默认下载命令的 `MyOption` 上（子命令传会被 Spectre 以 unknown option 拒绝），也不能靠 `BBDown.config` 绕过（配置合并对子命令整体跳过）；默认下载命令的 `--delay-per-page` 即使暴露给它也几乎不触发（只在多分 P 稿件内部生效：`pagesInfo.Count > 1`），而 `sub check` 把每个新增 aid 作为单视频任务下载。于是「新增一个投稿很多的 UP」这类首次检查会把全部新增稿件连续下载（每 aid 一个独立任务：解析 playurl + 分片下载），把账号推进风控窗口（列表 HTTP 412 / `code=-352`、playurl `v_voucher` 人机验证）。新选项在**每个工作单元（开始检查一个订阅 / 下载一个新增内容）之前停顿 N 秒**（首个动作不等待），把请求均匀摊开；默认 `0` = 不等待，行为与加入该选项前逐字一致；取值范围 `0 ~ 600`（与 `--delay-per-page` 对齐），越界值在发起任何网络请求之前报错并以退出码 1 退出。列表翻页（4 个 fetcher 的分页循环、50 条/页）刻意不含在间隔内：请求量比逐条下载小两个数量级。
+- **`sub check --delay-per-item <秒>`：订阅检查的节流间隔（#107）**：`sub check` 此前没有任何节流参数——`--delay-per-page` / `--retry-count` / `--retry-delay` 只声明在默认下载命令的 `MyOption` 上（子命令传会被 Spectre 以 unknown option 拒绝），也不能靠 `BBDown.config` 绕过（配置合并对子命令整体跳过）；默认下载命令的 `--delay-per-page` 即使暴露给它也几乎不触发（只在多分 P 稿件内部生效：`pagesInfo.Count > 1`），而 `sub check` 把每个新增 aid 作为单视频任务下载。于是「新增一个投稿很多的 UP」这类首次检查会把全部新增稿件连续下载（每 aid 一个独立任务：解析 playurl + 分片下载），把账号推进风控窗口（列表 HTTP 412 / `code=-352`、playurl `v_voucher` 人机验证）。新选项在**每个工作单元（开始检查一个订阅 / 下载一个新增内容）之前停顿 N 秒**（首个动作不等待），把请求均匀摊开；默认 `0` = 不等待，行为与加入该选项前逐字一致；取值范围 `0 ~ 600`（与 `--delay-per-page` 对齐），越界值在发起任何网络请求之前报错并以退出码 1 退出。列表翻页（4 个 fetcher 各自的分页循环：UP 主投稿列表 50 条/页，收藏夹 / 合集 / 系列列表 20 条/页）刻意不含在间隔内：请求量比逐条下载小两个数量级。
 
 ### 工程与验证
 
@@ -636,7 +636,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.6...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.7...HEAD
+[1.7.7]: https://github.com/AliverAnme/BBDown/compare/v1.7.6...v1.7.7
 [1.7.6]: https://github.com/AliverAnme/BBDown/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AliverAnme/BBDown/compare/v1.7.4...v1.7.5
 [1.7.4]: https://github.com/AliverAnme/BBDown/compare/v1.7.3...v1.7.4
