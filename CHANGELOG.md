@@ -2,6 +2,17 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **`sub check --delay-per-item <秒>`：订阅检查的节流间隔（#107）**：`sub check` 此前没有任何节流参数——`--delay-per-page` / `--retry-count` / `--retry-delay` 只声明在默认下载命令的 `MyOption` 上（子命令传会被 Spectre 以 unknown option 拒绝），也不能靠 `BBDown.config` 绕过（配置合并对子命令整体跳过）；默认下载命令的 `--delay-per-page` 即使暴露给它也几乎不触发（只在多分 P 稿件内部生效：`pagesInfo.Count > 1`），而 `sub check` 把每个新增 aid 作为单视频任务下载。于是「新增一个投稿很多的 UP」这类首次检查会把全部新增稿件连续下载（每 aid 一个独立任务：解析 playurl + 分片下载），把账号推进风控窗口（列表 HTTP 412 / `code=-352`、playurl `v_voucher` 人机验证）。新选项在**每个工作单元（开始检查一个订阅 / 下载一个新增内容）之前停顿 N 秒**（首个动作不等待），把请求均匀摊开；默认 `0` = 不等待，行为与加入该选项前逐字一致；取值范围 `0 ~ 600`（与 `--delay-per-page` 对齐），越界值在发起任何网络请求之前报错并以退出码 1 退出。列表翻页（4 个 fetcher 的分页循环、50 条/页）刻意不含在间隔内：请求量比逐条下载小两个数量级。
+
+### 工程与验证
+
+- 新增回归测试：以注入的假 fetcher / 假下载 / 假等待驱动 `CheckSubscriptionsAsync`，按**真实发生顺序**断言节流事件流（`list → delay → download → delay → …`，只数调用次数无法区分「停顿发生在下载之前还是之后」），覆盖「首个单元不等待」「无新增内容时相邻订阅之间仍停顿」「间隔秒数取自选项而非常量」「未设置与显式 0 都不产生任何等待且动作顺序不变」「停顿期间取消原样上抛、不被记成订阅失败」；`--delay-per-item` 的取值边界（0/600 合法，-1/601/`int.MaxValue` 非法且错误文本含选项名与范围）与真实 `CommandApp` 的绑定（`--delay-per-item 7`、`--delay-per-item=9`、缺省 0）。
+- `CheckSubscriptionsAsync` 的下载执行点改为可注入（默认仍为 `Program.DoWorkAsync`，与改动前逐字一致）：否则「每个新增内容下载之前停顿」这条接线只能在真机上验证——单测里一旦出现新增 aid，默认实现就会发起真实网络下载。
+
 ## [1.7.6] - 2026-10-10
 
 ### 修复

@@ -50,6 +50,10 @@ public class SubCheckSettings : DownloadOptionSettings
     [CommandOption("--full-scan")]
     [Description("禁用增量提前结束: 无视已下载历史翻完所有投稿列表页(默认遇到整页均已下载即停止翻页)")]
     public bool FullScan { get; set; }
+
+    [CommandOption("--delay-per-item")]
+    [Description("设置下载订阅新增内容之间的间隔时间(单位: 秒, 默认无间隔; 相邻订阅之间也停顿)")]
+    public int DelayPerItem { get; set; } = 0;
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
@@ -100,6 +104,16 @@ public class SubRemoveCommand : AsyncCommand<SubRemoveSettings>
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
 public class SubCheckCommand : AsyncCommand<SubCheckSettings>
 {
+    /// <summary>
+    /// <c>--delay-per-item</c> 的下界（秒）。0 = 不设间隔 = 加入该选项前的既有行为。
+    /// </summary>
+    internal const int MinDelayPerItemSeconds = 0;
+
+    /// <summary>
+    /// <c>--delay-per-item</c> 的上界（秒），与默认下载命令的 <c>--delay-per-page</c>（0~600）对齐。
+    /// </summary>
+    internal const int MaxDelayPerItemSeconds = 600;
+
     protected override async Task<int> ExecuteAsync(CommandContext context, SubCheckSettings settings, CancellationToken cancellationToken)
     {
         try
@@ -110,6 +124,19 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
             {
                 Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
                 return 0;
+            }
+
+            // --delay-per-item 越界与 -w 同待遇：整批无效的输入错误 → 明确报错 + 退出码 1，
+            // 且必须在 InitializeRequestSessionAsync（首次网络请求）之前判掉。
+            // 不抛 ArgumentException：ExecuteAsync 只捕获 OperationCanceledException，抛出去会
+            // 落到 Spectre 命令级处理器，被报成误导性的"请尝试升级到最新版本后重试!"。
+            // 校验点排在 -w 解析**之前**（与默认下载命令一致：Workflow 先 ValidateNumericOptions
+            // 再 ChangeWorkingDir）：TryResolveWorkDir 会经 ResolveWorkDir 执行
+            // Directory.CreateDirectory，排在其后会让一次注定失败的越界调用仍建出 -w 目录。
+            if (!TryValidateDelayPerItem(settings.DelayPerItem, out string? delayError))
+            {
+                Logger.LogError(delayError);
+                return 1;
             }
 
             // -w 必须先绝对化且只解析一次（RF-89）：ChangeWorkingDir（CLI 非 serve）会把进程
@@ -171,6 +198,27 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     }
 
     /// <summary>
+    /// <c>--delay-per-item</c> 的取值范围校验（<see cref="MinDelayPerItemSeconds"/> ~
+    /// <see cref="MaxDelayPerItemSeconds"/> 秒）。返回 false 时 <paramref name="error"/> 是可直接打印的
+    /// 错误文本。
+    ///
+    /// 抽成独立方法而非内联在 <see cref="ExecuteAsync"/>：后者一旦走到就会发起网络请求
+    /// （会话初始化 + 订阅枚举），单测无法覆盖边界值；这里是无副作用纯函数，0/600 与
+    /// -1/601 可直接断言。默认下载命令的同族校验（<c>ValidateNumericOptions</c>）抛
+    /// ArgumentException，本命令不能照抄——见 <see cref="ExecuteAsync"/> 中的说明。
+    /// </summary>
+    internal static bool TryValidateDelayPerItem(int seconds, [NotNullWhen(false)] out string? error)
+    {
+        if (seconds < MinDelayPerItemSeconds || seconds > MaxDelayPerItemSeconds)
+        {
+            error = $"参数有误: --delay-per-item 需在 {MinDelayPerItemSeconds} ~ {MaxDelayPerItemSeconds} 秒之间, 当前为 {seconds}";
+            return false;
+        }
+        error = null;
+        return true;
+    }
+
+    /// <summary>
     /// 逐订阅检查并增量下载新内容，返回失败的订阅数。用户取消与订阅数据损坏异常原样上抛，
     /// 由 <see cref="SubCheckCommand.ExecuteAsync"/> 分类为退出码（RF-30/RF-32）。
     /// </summary>
@@ -181,13 +229,27 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     /// <c>fetcher is IAidLister</c> 分支强制失效后 746 例仍全绿——性能优化被静默旁路是这类
     /// 改动最常见的回归形态。
     /// </param>
+    /// <param name="downloadAsync">
+    /// 单个新增内容的下载执行点，默认 <see cref="Program.DoWorkAsync"/>（与加入该参数前逐字一致）。
+    /// 与 <paramref name="fetcherFactory"/> 同因可注入：<c>--delay-per-item</c> 的"每个新增内容
+    /// 下载之前停顿"这条接线，否则只能在真机上验证——单测里一旦有新增 aid，默认实现就会
+    /// 发起真实网络下载。
+    /// </param>
+    /// <param name="delayAsync">
+    /// 节流的实际等待点（秒, token），默认 <see cref="Task.Delay(TimeSpan, CancellationToken)"/>。
+    /// 可注入使"停顿了几次、每次几秒、相对列表/下载的先后顺序"成为可断言的纯逻辑（不真等）。
+    /// </param>
     internal static async Task<int> CheckSubscriptionsAsync(
         List<Subscription> subs,
         SubCheckSettings settings,
         CancellationToken cancellationToken,
-        Func<string, bool, IFetcher>? fetcherFactory = null)
+        Func<string, bool, IFetcher>? fetcherFactory = null,
+        Func<MyOption, CancellationToken, Task>? downloadAsync = null,
+        Func<int, CancellationToken, Task>? delayAsync = null)
     {
         var createFetcher = fetcherFactory ?? FetcherFactory.CreateFetcher;
+        var download = downloadAsync ?? Program.DoWorkAsync;
+        var delay = delayAsync ?? ((seconds, token) => Task.Delay(TimeSpan.FromSeconds(seconds), token));
         // -w 已由 ExecuteAsync 经 TryResolveWorkDir 绝对化且只解析一次（RF-89）：本方法内不得
         // 再解析——循环前的解析点不在任何 try 内，抛出的 ArgumentException 会逃出命令级
         // 异常过滤器（ExecuteAsync 只捕获 OperationCanceledException）。
@@ -203,12 +265,43 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
         // 名称槽位每个订阅都占用（与是否有新增无关），冲突序号才能跨 run 稳定
         var usedSubDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // --delay-per-item：首个工作单元不等待，此后**每个**工作单元（开始检查一个订阅 /
+        // 下载一个新增内容）之前先停顿 N 秒。动机：sub check 此前没有任何节流参数（--delay-per-page
+        // 只声明在默认下载命令上，sub check 传给 Spectre 会被当 unknown option 拒绝），于是
+        // "新增一个投稿很多的 UP"这种首次检查会连续下载全部新增稿件——每个 aid 一个独立任务
+        // （解析 playurl + 分片下载），把账号推进风控窗口（列表 412 / -352，playurl v_voucher）。
+        //
+        // 单位必须是"工作单元"而不是"分 P"：单个新增 aid 就是一次独立任务，复用 --delay-per-page
+        // 的语义在这里几乎永不触发（它只在多分 P 稿件内部生效：pagesInfo.Count > 1）。所以
+        // 间隔只能插在 check 循环这一层。
+        //
+        // 列表翻页（4 个 fetcher 各自的分页循环、50 条/页、零间隔）刻意不含在内：翻页请求量
+        // 比逐条下载小两个数量级，且要把间隔穿进 fetcher 会破坏 CollectNewAidsAsync 的委托
+        // 注入测试形态，留待确有需要时再加。
+        //
+        // DelayPerItem = 0（默认）时既不等待也不打日志，行为与加入该选项前逐字一致。
+        bool firstUnit = true;
+        async Task PaceAsync()
+        {
+            if (firstUnit)
+            {
+                firstUnit = false;
+                return;
+            }
+            if (settings.DelayPerItem <= 0) return;
+            Logger.Log($"停顿{settings.DelayPerItem}秒...");
+            await delay(settings.DelayPerItem, cancellationToken);
+        }
+
         int failedSubs = 0;
         foreach (var sub in subs)
         {
             string subWorkDir = Path.Combine(baseWorkDir, ResolveSubDirName(sub, usedSubDirs));
             Logger.Log($"检查订阅: {sub.Name} ({sub.Target})"
                 + (settings.PerSubDir ? $"  输出目录: {subWorkDir}" : ""));
+            // 停顿在 try 之外：用户取消时 Task.Delay 抛出的 OCE 直接上抛给 ExecuteAsync
+            // 归类为"已取消 / 退出码 0"，不会被下方"单订阅失败"的过滤器记成一次失败。
+            await PaceAsync();
             try
             {
                 string resolved = await UrlResolver.ResolveAsync(sub.Target, cancellationToken);
@@ -249,9 +342,10 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 {
                     try
                     {
+                        await PaceAsync();
                         var opt = settings.ToMyOption($"av{aid}",
                             settings.PerSubDir ? subWorkDir : settings.WorkDir);
-                        await Program.DoWorkAsync(opt, cancellationToken);
+                        await download(opt, cancellationToken);
                         await SubscriptionStore.RecordDownloadedAsync(sub.Target, aid, cancellationToken);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

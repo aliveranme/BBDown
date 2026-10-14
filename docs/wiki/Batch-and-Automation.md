@@ -47,6 +47,12 @@ BBDown --save-archives-to-file -p 1-50 "https://space.bilibili.com/163637592"
 BBDown --delay-per-page 3 -p ALL "https://www.bilibili.com/bangumi/play/ss33073"
 ```
 
+订阅场景另有一个开关：`BBDown sub check --delay-per-item <秒>`。它给**每个新增内容（以及每个订阅）之间**插入间隔——刚从订阅里加入一个投稿很多的 UP 主时，首次检查会连续下载全部新增稿件，用它把请求摊开可显著降低触发风控的概率（例如 `--delay-per-item 5`）：
+```bash
+BBDown sub check --per-sub-dir --delay-per-item 5
+```
+注意 `--delay-per-page` 对 `sub check` 几乎不起作用（它只在多分 P 稿件内部生效），两者不可互相替代，详见 [子命令](Subcommands)。
+
 ---
 
 ## 3. Webhook 回调通知 (`--notify-webhook`)
