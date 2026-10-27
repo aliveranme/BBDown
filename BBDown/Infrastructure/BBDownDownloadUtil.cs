@@ -148,6 +148,10 @@ internal static class BBDownDownloadUtil
 
         if (response.StatusCode == HttpStatusCode.OK) // server doesn't response a partial content
         {
+            // If-Range 不匹配时服务端会返回完整对象。分片模式不能把这个响应当作单片：
+            // 其它分片可能已属于旧版本，必须由调用方清除整条轨道并重新探测。
+            if (request.FailOnRangeNotSupported && !string.IsNullOrEmpty(request.IfRange))
+                throw new RemoteResourceChangedException();
             if (request.FailOnRangeNotSupported && (downloadedBytes > 0 || request.ToPosition != null)) throw new NotSupportedException("Range request is not supported.");
             downloadedBytes = 0;
             // 完整重下必须清空旧内容：只 Seek(0) 而没 SetLength(0) 会留下旧文件尾部，
@@ -417,7 +421,7 @@ internal static class BBDownDownloadUtil
         // 预检决策（是否已完整 / 可否续传 / 陈旧文件处置）收口在 PrepareSingleThreadTargetAsync；
         // 目标长度可能被权威总长修正、续传点可能携带 If-Range，均以返回的决策为准。
         var precheck = await PrepareSingleThreadTargetAsync(
-            url, path, fileSize, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R"), token);
+            url, path, fileSize, probeHeaders?.ETag?.ToString(), probeContentHeaders?.LastModified?.ToString("R"), token);
         if (precheck.AlreadyComplete)
         {
             // 成品已就位：回收其它下载模式遗留的工作残留（.tmp/.aria2/分片/.merging），
@@ -427,7 +431,9 @@ internal static class BBDownDownloadUtil
         }
         string tmpName = precheck.TmpName;
         fileSize = precheck.FileSize;
-        string? resumeIfRange = precheck.ResumeIfRange;
+        // 首次请求也带探测得到的校验器：若连接中断，重试沿用同一版本，
+        // 不能仅在跨进程续传时才设置 If-Range。
+        string? resumeIfRange = precheck.ResumeIfRange ?? SelectIfRange(probeHeaders?.ETag?.ToString(), probeContentHeaders?.LastModified?.ToString("R"));
         int maxRetry = Config.Current.MaxRetryCount;
         // 下载首字节前就写入续传清单：真正中断（进程被杀/Ctrl+C）留下的 .tmp 必须带清单，
         // 下次运行才能确认其资源身份而续传。若等下载完成才写，中断的 .tmp 无清单，
@@ -613,7 +619,7 @@ internal static class BBDownDownloadUtil
             // 删除完整重下。等长也必须过身份校验：长度恰好相同的跨资源残留若被当作
             // "已完整"跳过，残缺文件会直接作为成品进入混流。
             var (canResume, reason) = await CanResumeFromAsync(
-                path, url, fileSize, headers?.ETag?.Tag, contentHeaders?.LastModified?.ToString("R"), token);
+                path, url, fileSize, headers?.ETag?.ToString(), contentHeaders?.LastModified?.ToString("R"), token);
             if (!canResume)
             {
                 Logger.LogDebug("aria2c: 既有文件资源身份不可信（{0}），删除后完整重下", reason ?? "未知原因");
@@ -814,6 +820,7 @@ internal static class BBDownDownloadUtil
         // RemoteSizeMismatchException。这里按声明的权威总长最多重新切分一次，
         // 而不是用错误大小空转重试（每次必然再次失败）。
         long mismatchTotal = 0;
+        string? ifRange = SelectIfRange(probeHeaders?.ETag?.ToString(), probeContentHeaders?.LastModified?.ToString("R"));
         List<Clip>? allClips = null;
         for (int sizeAttempt = 0; ; sizeAttempt++)
         {
@@ -837,7 +844,7 @@ internal static class BBDownDownloadUtil
             if (anyExistingSegment)
             {
                 var (canResumeTrack, trackReason) = await CanResumeFromAsync(
-                    manifestClip, url, fileSize, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R"), token, segmentSizeBytes);
+                    manifestClip, url, fileSize, probeHeaders?.ETag?.ToString(), probeContentHeaders?.LastModified?.ToString("R"), token, segmentSizeBytes);
                 if (!canResumeTrack)
                 {
                     Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
@@ -865,6 +872,7 @@ internal static class BBDownDownloadUtil
                 MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)),
             };
             mismatchTotal = 0;
+            int resourceChanged = 0;
             Exception? clipFailure = null;
             try
             {
@@ -872,8 +880,17 @@ internal static class BBDownDownloadUtil
                 {
                     // 分片级重试与异常归一化收口在 DownloadClipWithRetryAsync；尺寸错位以权威总长返回，
                     // 由下方统一决定是否按权威总长重切分。
-                    long? clipTotal = await DownloadClipWithRetryAsync(
-                        url, path, clip, fileSize, maxRetry, progressAggregator, progress, clipToken);
+                    long? clipTotal;
+                    try
+                    {
+                        clipTotal = await DownloadClipWithRetryAsync(
+                            url, path, clip, fileSize, maxRetry, progressAggregator, progress, ifRange, clipToken);
+                    }
+                    catch (RemoteResourceChangedException)
+                    {
+                        Interlocked.Exchange(ref resourceChanged, 1);
+                        throw;
+                    }
                     if (clipTotal is { } actualTotal)
                         Interlocked.CompareExchange(ref mismatchTotal, actualTotal, 0);
                 });
@@ -885,6 +902,13 @@ internal static class BBDownDownloadUtil
                 clipFailure = ex;
             }
 
+            if (resourceChanged != 0)
+            {
+                // 等所有分片任务结束后清理，避免并发写者在清理后留下旧版本分片。
+                CleanStaleClipsFor(path);
+                DeleteResumeManifest(manifestClip);
+                throw new RemoteResourceChangedException();
+            }
             if (mismatchTotal > 0)
             {
                 // 尺寸错位：按权威总长重新切分下载（最多修复一次；仍不符则抛出）。
@@ -919,7 +943,7 @@ internal static class BBDownDownloadUtil
     /// 探测大小，本分片就地放弃，由调用方按权威总长整条轨道重新切分下载。
     /// </summary>
     private static async Task<long?> DownloadClipWithRetryAsync(string url, string path, Clip clip, long fileSize,
-        int maxRetry, ProgressAggregator progressAggregator, ProgressBar progress, CancellationToken token)
+        int maxRetry, ProgressAggregator progressAggregator, ProgressBar progress, string? ifRange, CancellationToken token)
     {
         int retry = 0;
         string tmp = ClipPathFor(path, clip.index);
@@ -936,7 +960,7 @@ internal static class BBDownDownloadUtil
                         var current = progressAggregator.Report(index, downloaded);
                         progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
                     },
-                    FailOnRangeNotSupported: true, ExpectedTotalSize: fileSize), token);
+                    FailOnRangeNotSupported: true, IfRange: ifRange, ExpectedTotalSize: fileSize), token);
                 return null;
             }
             catch (RemoteSizeMismatchException ex)
@@ -1192,7 +1216,7 @@ internal static class BBDownDownloadUtil
                 StableResourceIdentity(url),
                 totalLength,
                 contentHeaders?.LastModified?.ToString("R"),
-                headers?.ETag?.Tag,
+                headers?.ETag?.ToString(),
                 segmentSizeBytes);
             // 原子写入：写唯一临时文件后同目录 rename。进程在写入中被杀会留下截断 JSON，
             // 下次只能放弃已有 .tmp（CanResumeFrom 读清单失败）。rename 保证清单要么完整
@@ -1264,9 +1288,14 @@ internal static class BBDownDownloadUtil
             {
                 return (false, "续传清单分片布局缺失或与当前分片大小不一致");
             }
-            // 校验器对比：清单与当前探测都有 ETag/Last-Modified 且不一致 → 内容已变，拒绝续传。
-            // 仅一方有校验器时不强制（有些 CDN 不返回 ETag/Last-Modified），退化为上面
-            // 的身份+长度判断。
+            // 一方有可用校验器而另一方没有时，也无法证明已有字节属于当前版本。
+            var currentValidator = SelectIfRange(currentETag, currentLastModified);
+            var previousValidator = SelectIfRange(m.ETag, m.LastModified);
+            if ((currentValidator is null) != (previousValidator is null))
+                return (false, "续传清单与当前探测缺少可比较的资源校验器");
+            if (currentValidator is not null && previousValidator is not null
+                && !string.Equals(currentValidator, previousValidator, StringComparison.Ordinal))
+                return (false, "续传清单与当前探测的资源校验器不一致");
             if (currentETag is not null && m.ETag is not null && currentETag != m.ETag)
             {
                 return (false, $"服务器 ETag 已变化（{m.ETag} → {currentETag}），内容不可信");
@@ -1291,6 +1320,14 @@ internal static class BBDownDownloadUtil
         catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex)) { /* 清理失败不影响主流程 */ }
     }
 
+    // RFC If-Range 不允许弱 ETag；弱 ETag 必须回退到 Last-Modified。
+    private static string? SelectIfRange(string? etag, string? lastModified)
+    {
+        if (EntityTagHeaderValue.TryParse(etag, out var parsed) && !parsed.IsWeak)
+            return parsed.ToString();
+        return string.IsNullOrEmpty(lastModified) ? null : lastModified;
+    }
+
     /// <summary>读取续传清单里的 If-Range 值（ETag 优先，其次 Last-Modified）；清单缺失返回 null。</summary>
     internal static async Task<string?> ReadManifestIfRangeAsync(string tmpName, CancellationToken token = default)
     {
@@ -1301,8 +1338,7 @@ internal static class BBDownDownloadUtil
                 await File.ReadAllTextAsync(ResumeManifestPath(tmpName), token),
                 DownloadManifestJsonContext.Default.ResumeManifest);
             if (m is null) return null;
-            if (!string.IsNullOrEmpty(m.ETag)) return m.ETag;
-            return m.LastModified;
+            return SelectIfRange(m.ETag, m.LastModified);
         }
         catch (Exception ex) when (ExceptionPolicies.IsJsonOrIoFailure(ex))
         {
@@ -1331,6 +1367,13 @@ internal static class BBDownDownloadUtil
         Logger.LogDebug("将https更改为http");
         return url.Replace("https:", "http:");
     }
+}
+
+/// <summary>分片 If-Range 未获得 206，整条轨道必须重新探测并下载。</summary>
+internal sealed class RemoteResourceChangedException : InvalidOperationException
+{
+    public RemoteResourceChangedException()
+        : base("远端资源可能已变化或服务器不支持分片，已丢弃分片，请重试下载") { }
 }
 
 /// <summary>AOT 裁剪安全的续传清单 JSON 序列化上下文。</summary>

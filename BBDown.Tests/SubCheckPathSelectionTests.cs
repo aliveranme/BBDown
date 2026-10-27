@@ -152,4 +152,21 @@ public class SubCheckPathSelectionTests : IDisposable
         Assert.Equal(0, failed);
         Assert.Equal(1, fetcher.FetchCalls);
     }
+    [Fact]
+    public async Task PerSubDir_CheckPersistsAssignmentsBeforeAnyDownloads()
+    {
+        var first = new Subscription("mid:1", "same", 1);
+        var second = new Subscription("mid:2", "same", 2);
+        var settings = Settings();
+        settings.PerSubDir = true;
+        var fetcher = new AidListerFetcher();
+
+        await SubCheckCommand.CheckSubscriptionsAsync([first, second], settings, CancellationToken.None, (_, _) => fetcher);
+        await SubCheckCommand.CheckSubscriptionsAsync([second], settings, CancellationToken.None, (_, _) => fetcher);
+
+        var assignments = await SubscriptionStore.ResolveDirectoriesAsync([second]);
+        Assert.Equal("same-2", assignments[second.Target]);
+        Assert.Equal("same", assignments[first.Target]);
+    }
+
 }

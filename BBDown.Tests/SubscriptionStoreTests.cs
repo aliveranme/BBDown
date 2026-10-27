@@ -229,4 +229,58 @@ public class SubscriptionStoreTests : IDisposable
         Assert.Contains("a1", hist);
         Assert.Contains("b2", hist);
     }
+    [Fact]
+    public async Task IsolatedHistory_BlocksLaterReadsAndWritesUntilRestored()
+    {
+        await File.WriteAllTextAsync(HistoryFile, "{ broken");
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadHistoryAsync("mid:1"));
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadHistoryAsync("mid:1"));
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.RecordDownloadedAsync("mid:1", "1"));
+        Assert.False(File.Exists(HistoryFile));
+
+        // 恢复文件后，即使隔离副本仍留作取证，正常历史也可使用。
+        await File.WriteAllTextAsync(HistoryFile, "{\"mid:1\":[\"1\"]}");
+        Assert.Contains("1", await SubscriptionStore.LoadHistoryAsync("mid:1"));
+    }
+
+    [Fact]
+    public async Task IsolatedSubscriptions_BlockLaterAddUntilRestored()
+    {
+        await File.WriteAllTextAsync(SubFile, "{ broken");
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadAsync());
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.AddAsync("mid:2", "new"));
+        Assert.False(File.Exists(SubFile));
+
+        await File.WriteAllTextAsync(SubFile, "[]");
+        await SubscriptionStore.AddAsync("mid:2", "new");
+        Assert.Single(await SubscriptionStore.LoadAsync());
+    }
+
+    [Fact]
+    public async Task DirectoryAssignments_SurviveRemovalAndReserveOldSlots()
+    {
+        var first = new Subscription("mid:1", "same", 1);
+        var second = new Subscription("mid:2", "same", 2);
+        var initial = await SubscriptionStore.ResolveDirectoriesAsync([first, second]);
+        Assert.Equal("same", initial[first.Target]);
+        Assert.Equal("same-2", initial[second.Target]);
+
+        var third = new Subscription("mid:3", "same", 3);
+        var afterRemoval = await SubscriptionStore.ResolveDirectoriesAsync([second, third]);
+        Assert.Equal("same-2", afterRemoval[second.Target]);
+        Assert.Equal("same-3", afterRemoval[third.Target]);
+        Assert.Equal("same", afterRemoval[first.Target]);
+    }
+
+    [Fact]
+    public async Task CorruptDirectoryMapping_BlocksLaterAllocation()
+    {
+        var mapFile = Path.Combine(_tempRoot, "BBDownSubscriptions.directories.json");
+        await File.WriteAllTextAsync(mapFile, "{ broken");
+        var subscriptions = new[] { new Subscription("mid:1", "same", 1) };
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.ResolveDirectoriesAsync(subscriptions));
+        await Assert.ThrowsAsync<SubscriptionDataCorruptException>(() => SubscriptionStore.ResolveDirectoriesAsync(subscriptions));
+        Assert.False(File.Exists(mapFile));
+    }
+
 }

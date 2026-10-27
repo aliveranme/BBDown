@@ -262,8 +262,10 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
         string baseWorkDir = settings.PerSubDir
             ? Program.ResolvePerSubBaseWorkDir(settings.WorkDir)
             : settings.WorkDir;
-        // 名称槽位每个订阅都占用（与是否有新增无关），冲突序号才能跨 run 稳定
-        var usedSubDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 目录槽位持久化，移除订阅后也不重用，避免把新内容写进其他订阅的旧目录。
+        var subDirs = settings.PerSubDir
+            ? await SubscriptionStore.ResolveDirectoriesAsync(subs, cancellationToken)
+            : null;
 
         // --delay-per-item：首个工作单元不等待，此后**每个**工作单元（开始检查一个订阅 /
         // 下载一个新增内容）之前先停顿 N 秒。动机：sub check 此前没有任何节流参数（--delay-per-page
@@ -296,7 +298,7 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
         int failedSubs = 0;
         foreach (var sub in subs)
         {
-            string subWorkDir = Path.Combine(baseWorkDir, ResolveSubDirName(sub, usedSubDirs));
+            string subWorkDir = settings.PerSubDir ? Path.Combine(baseWorkDir, subDirs![sub.Target]) : baseWorkDir;
             Logger.Log($"检查订阅: {sub.Name} ({sub.Target})"
                 + (settings.PerSubDir ? $"  输出目录: {subWorkDir}" : ""));
             // 停顿在 try 之外：用户取消时 Task.Delay 抛出的 OCE 直接上抛给 ExecuteAsync
@@ -404,7 +406,7 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     /// --per-sub-dir：把订阅显示名净化为安全的目录段（RF-18 同款净化——剔除路径分隔符/
     /// 控制字符/保留名/纯点段，超长截断），并与既有槽位去重（OrdinalIgnoreCase 对齐
     /// Windows 文件系统）：两个订阅净化后同名（如 "a:b"/"a?b" → "a_b"）或显示名重复时
-    /// 追加 -2/-3 序号，避免互相覆盖。槽位在循环内逐订阅占用，序号跨 run 稳定。
+    /// 追加 -2/-3 序号，避免互相覆盖。分配结果由 SubscriptionStore 持久化。
     /// </summary>
     internal static string ResolveSubDirName(Subscription sub, HashSet<string> usedDirs)
     {

@@ -115,6 +115,56 @@ public class ConfigMergeTests
         Assert.Contains("--dfn-priority", merged);
     }
 
+    [Theory]
+    [InlineData("--skip-mux\nav123\n", false)]
+    [InlineData("--work-dir\noutput\nav123\n", false)]
+    [InlineData("--skip-mux\nav123\n", true)]
+    [InlineData("--work-dir\noutput\nav123\n", true)]
+    public async Task ConfigUrlAfterOption_RespectsCliUrl(string config, bool cliHasUrl)
+    {
+        var cfg = WriteConfig(config);
+        try
+        {
+            var args = cliHasUrl ? new[] { "--config-file", cfg, "av456" } : new[] { "--config-file", cfg };
+            var merged = await BBDownConfigParser.MergeWithConfigAsync(args);
+            Assert.Contains(cliHasUrl ? "av456" : "av123", merged);
+            Assert.DoesNotContain(cliHasUrl ? "av123" : "av456", merged);
+        }
+        finally { File.Delete(cfg); }
+    }
+
+    [Theory]
+    [InlineData("--skip-mux\nav123\n", "--skip-mux")]
+    [InlineData("--work-dir\noutput\nav123\n", "--work-dir")]
+    public async Task OverriddenConfigOption_DoesNotDiscardFollowingUrl(string config, string option)
+    {
+        var cfg = WriteConfig(config);
+        try
+        {
+            var args = option == "--work-dir"
+                ? new[] { "--config-file", cfg, option, "other" }
+                : new[] { "--config-file", cfg, option };
+            var merged = await BBDownConfigParser.MergeWithConfigAsync(args);
+            Assert.Contains("av123", merged);
+            Assert.Single(merged, value => value == option);
+        }
+        finally { File.Delete(cfg); }
+    }
+
+    [Fact]
+    public async Task ConfigBooleanValueAndInlineOption_ArePreserved()
+    {
+        var cfg = WriteConfig("--multi-thread\nfalse\n--work-dir=output\nav123\n");
+        try
+        {
+            var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg]);
+            Assert.Contains("false", merged);
+            Assert.Contains("--work-dir=output", merged);
+            Assert.Contains("av123", merged);
+        }
+        finally { File.Delete(cfg); }
+    }
+
     [Fact]
     public async Task UrlLikeOptionValue_DoesNotSuppressConfigUrl()
     {

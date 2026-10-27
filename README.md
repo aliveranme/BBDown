@@ -156,6 +156,8 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | `watchlater` | 批量下载稍后再看列表（需登录） |
 | `sub` | 订阅管理：`sub add/list/remove/check`，检查并增量下载新内容（以稿件 aid 为粒度；首次 check 无下载历史时，订阅视频的所有分P会被视为新内容全量下载，下载成功后才记录历史跳过）。`sub check --per-sub-dir` 可让每个订阅下载到 `<work-dir>/<订阅名>/` 独立子目录（多订阅不混堆）。`mid:` 订阅的检查为轻量增量扫描（只列举投稿 aid、遇到整页已下载即停止翻页），`sub check --full-scan` 可强制重扫全部列表页（**首次部署、历史文件重建/清理过历史、或怀疑漏下了旧投稿时先跑一次**）。`sub check --delay-per-item <秒>` 在每个新增内容下载之前、以及每个订阅开始检查之前停顿指定秒数（首个动作不等待，默认无间隔，范围 0~600 秒；超界值即使无订阅也会报错）——新增投稿较多的订阅首次检查会连续下载全部新增稿件，用它把请求摊开可显著降低触发风控的概率 |
 
+`--per-sub-dir` 的目录分配保存在程序目录的 `BBDownSubscriptions.directories.json`，移除订阅后仍保留其目录槽位。订阅文件损坏被隔离后，请恢复原文件；确认放弃数据时可移走 `.corrupt-*` 副本再重建。升级前已移除订阅的旧目录无法自动识别，详见[订阅管理](docs/wiki/Subcommands.md)。
+
 `serve` 子选项：
 
 | 短选项 | 长选项 | 说明 |
@@ -165,6 +167,8 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | | `--serve-token` | 可选认证令牌，配置后所有任务/查询端点要求 `X-Serve-Token` 请求头，否则 401。优先使用环境变量 `BBDOWN_SERVE_TOKEN` 注入（避免令牌出现在进程命令行；两者冲突时环境变量胜出并告警） |
 | | `--trusted-proxy` | 信任直连反代追加的 X-Forwarded-For（认证失败限速按客户真实 IP 计键）。仅在 serve 前方确有可信反代时启用，否则客户端可伪造 XFF 绕过限速 |
 | | `--notify-webhook` | 任务完成时向该固定地址发送 HTTP POST 回调（服务端配置，不接受客户端指定） |
+
+服务端 Webhook 通知覆盖成功、失败和取消的任务终态，直连经过校验的回调地址，不使用系统代理。
 
 > 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。多用户环境下建议用环境变量 `BBDOWN_SERVE_TOKEN` 注入令牌，避免 `ps` 等进程列表暴露。`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
 
@@ -299,6 +303,8 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 --download-danmaku
 ```
 </details>
+
+配置文件中的下载 URL 可以放在选项前或后；命令行显式提供的 URL 和选项优先。
 
 > **弹幕说明**：`--download-danmaku-formats` 目前仅支持 `xml` 与 `ass` 两种格式（默认可写 `xml,ass`；B 站原生 protobuf 弹幕尚未实现）。`--danmaku-filter` / `--danmaku-filter-user` 仅在生成 ASS 弹幕时过滤关键词 / 发送者，XML 弹幕始终保留原始全量（XML 作存档、ASS 作过滤展示）。
 

@@ -13,6 +13,9 @@ public partial class BBDownApiServer
     private readonly List<DownloadTask> runningTasks = [];
     private readonly List<DownloadTask> finishedTasks = [];
 
+    // 可注入完成通知以验证任务的终态路径，生产环境始终使用真实 webhook。
+    internal Func<DownloadTask, string?, Task>? CompletionNotifier { get; set; }
+
     /// <summary>
     /// 在途后台任务集合（fire-and-forget 的 ProcessDownloadTaskAsync）。服务关停时
     /// 取消共享令牌后必须等待这些任务完成取消/终止外部进程/持久化，再退出进程——
@@ -188,7 +191,7 @@ public partial class BBDownApiServer
             // 排队等待期间被取消（客户端 /cancel/{id} 或服务器关停）：标记取消并落盘
             task.SetStatus(DownloadTaskStatus.Cancelled);
             task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
-            FinishTask(task);
+            await FinishTaskAndNotifyAsync(task, notifyWebhook);
             return;
         }
 
@@ -211,7 +214,7 @@ public partial class BBDownApiServer
             task.SetStatus(cancelStatus);
             if (cancelStatus == DownloadTaskStatus.Failed)
                 Logger.LogError($"解析链接失败: {SanitizeLogString(option.Url)} - {SanitizeLogString(cancelMessage)}");
-            FinishTask(task);
+            await FinishTaskAndNotifyAsync(task, notifyWebhook);
             return;
         }
         catch (Exception e)
@@ -226,7 +229,7 @@ public partial class BBDownApiServer
             task.ErrorMessage = SanitizeErrorMessage(e.Message);
             task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
             task.SetStatus(DownloadTaskStatus.Failed);
-            FinishTask(task);
+            await FinishTaskAndNotifyAsync(task, notifyWebhook);
             Logger.LogError($"解析链接失败: {SanitizeLogString(option.Url)} - {SanitizeLogString(e.Message)}");
             return;
         }
@@ -286,9 +289,13 @@ public partial class BBDownApiServer
                 ? (double)(task.TotalDownloadedBytes / elapsed)
                 : 0;
         }
-        FinishTask(task);
+        await FinishTaskAndNotifyAsync(task, notifyWebhook);
+    }
 
-        await NotifyCompletionCallbackAsync(task, notifyWebhook);
+    private async Task FinishTaskAndNotifyAsync(DownloadTask task, string? notifyWebhook)
+    {
+        FinishTask(task);
+        await (CompletionNotifier ?? NotifyCompletionCallbackAsync)(task, notifyWebhook);
     }
 
     /// <summary>

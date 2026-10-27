@@ -226,24 +226,7 @@ public partial class BBDownApiServer
                 target = addresses[0];
             }
 
-            var handler = new SocketsHttpHandler
-            {
-                AllowAutoRedirect = false,
-                ConnectCallback = async (context, cancellationToken) =>
-                {
-                    var socket = new Socket(target.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                    try
-                    {
-                        await socket.ConnectAsync(target, context.DnsEndPoint.Port, cancellationToken).ConfigureAwait(false);
-                        return new NetworkStream(socket, ownsSocket: true);
-                    }
-                    catch
-                    {
-                        socket.Dispose();
-                        throw;
-                    }
-                },
-            };
+            var handler = CreateCallbackHandler(target);
             using var client = new HttpClient(handler) { Timeout = CallbackClientTimeout };
             // ConnectCallback 已绑定目标 IP；SNI 由 HttpClient 依据请求 URI 的原 host 设置，
             // 因此请求 URI 保留原 webhook 而不是替换成 IP
@@ -265,6 +248,27 @@ public partial class BBDownApiServer
             Logger.LogWarn($"回调失败: {e.Message}");
         }
     }
+
+    internal static SocketsHttpHandler CreateCallbackHandler(IPAddress target) => new()
+    {
+        AllowAutoRedirect = false,
+        // 连接必须直达已校验的目标 IP；代理模式下 DnsEndPoint 是代理地址和端口。
+        UseProxy = false,
+        ConnectCallback = async (context, cancellationToken) =>
+        {
+            var socket = new Socket(target.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                await socket.ConnectAsync(target, context.DnsEndPoint.Port, cancellationToken).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        },
+    };
 
     /// <summary>
     /// 字面 IP 回调的敏感地址判定：与 <see cref="IsSafeCallbackUrlAsync"/> 的字面 IP 分支一致，

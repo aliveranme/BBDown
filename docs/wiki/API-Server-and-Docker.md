@@ -22,6 +22,8 @@ BBDown serve
 | | `--trusted-proxy` | *(关闭)* | 信任直连反代追加的 `X-Forwarded-For`（认证失败限速按客户真实 IP 计键）。仅在 serve 前方确有可信反代时启用，否则客户端可伪造 XFF 绕过限速 |
 | | `--notify-webhook` | *(无)* | 任务完成时向该固定地址发送 HTTP POST 回调（服务端配置；`/add-task` 请求体中的回调字段一律被忽略） |
 
+回调覆盖成功、失败和取消的任务终态，包括排队取消及链接解析失败。服务端直连经过校验的回调地址，不使用系统 HTTP 代理；回调发送失败会记录警告。
+
 ### 1.3 生产环境启动示例
 ```bash
 BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_token_123"

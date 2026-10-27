@@ -9,6 +9,39 @@ public class ServeApiSecurityTests
     // 域名用例需要解析 DNS：注入固定解析器保证测试确定性、不依赖网络
     private static Task<IPAddress[]> ResolvePublic(string _) => Task.FromResult(new IPAddress[] { IPAddress.Parse("93.184.216.34") });
 
+    [Fact]
+    public async Task CallbackHandler_ConnectsToValidatedTargetEvenWhenProxyConfigured()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var previousProxy = HttpClient.DefaultProxy;
+        try
+        {
+            // 测试目标域名无需 DNS；代理指向不可用端口，真实连接应直达校验后的目标 IP。
+            HttpClient.DefaultProxy = new WebProxy("http://127.0.0.1:1");
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var serve = Task.Run(async () =>
+            {
+                using var socket = await listener.AcceptTcpClientAsync(timeout.Token);
+                await using var stream = socket.GetStream();
+                using var reader = new StreamReader(stream, leaveOpen: true);
+                while (!string.IsNullOrEmpty(await reader.ReadLineAsync(timeout.Token))) { }
+                byte[] response = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                await stream.WriteAsync(response, timeout.Token);
+            }, timeout.Token);
+            using var client = new HttpClient(BBDownApiServer.CreateCallbackHandler(IPAddress.Loopback));
+            using var response = await client.GetAsync($"http://webhook.test:{port}/callback", timeout.Token);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            await serve;
+        }
+        finally
+        {
+            HttpClient.DefaultProxy = previousProxy;
+            listener.Stop();
+        }
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

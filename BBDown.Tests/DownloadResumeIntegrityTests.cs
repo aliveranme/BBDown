@@ -6,6 +6,55 @@ namespace BBDown.Tests;
 [Collection("PathLockCollection")]
 public class DownloadResumeIntegrityTests
 {
+    [Fact]
+    public async Task SingleThreadRetry_ChangedResource_DiscardsOldPrefix()
+    {
+        using var server = new ChangingResourceServer(interruptFirst: true);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-version-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var original = Config.Current;
+        try
+        {
+            Config.Apply(original with { RetryDelayMs = 0, MaxRetryCount = 3 });
+            var target = Path.Combine(dir, "video.mp4");
+            await BBDownDownloadUtil.DownloadFileAsync(server.Url, target, new());
+            Assert.Equal(server.NewPayload, await File.ReadAllBytesAsync(target));
+            Assert.True(server.IfRangeHeaders.Count >= 2);
+            Assert.All(server.IfRangeHeaders, value => Assert.Equal("\"old\"", value));
+        }
+        finally
+        {
+            Config.Apply(original);
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task MultiThreadDownload_ChangedResource_DiscardsAllSegments()
+    {
+        using var server = new ChangingResourceServer(interruptFirst: false);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-version-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var original = Config.Current;
+        try
+        {
+            Config.Apply(original with { ThreadSegmentSizeMb = 1, RetryDelayMs = 0, MaxRetryCount = 3 });
+            var target = Path.Combine(dir, "video.mp4");
+            await Assert.ThrowsAsync<RemoteResourceChangedException>(() =>
+                BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(server.Url, target, new() { MultiThread = true }));
+            Assert.False(File.Exists(target));
+            Assert.Empty(Directory.GetFiles(dir, "*.vclip"));
+            Assert.Empty(Directory.GetFiles(dir, "*.manifest.json"));
+            Assert.True(server.IfRangeHeaders.Count >= 2);
+            Assert.All(server.IfRangeHeaders, value => Assert.Equal("\"old\"", value));
+        }
+        finally
+        {
+            Config.Apply(original);
+            Directory.Delete(dir, true);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -159,6 +208,89 @@ public class DownloadResumeIntegrityTests
             Assert.Contains("--continue=true", spec.Arguments);
             await complete(cancellationToken);
             return 0;
+        }
+    }
+
+    /// <summary>首次请求提供旧对象，接下来同长度的新对象按 If-Range 规范返回完整 200。</summary>
+    private sealed class ChangingResourceServer : IDisposable
+    {
+        private const int Mb = 1024 * 1024;
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _loop;
+        private readonly bool _interruptFirst;
+        private int _requests;
+        public string Url { get; }
+        public byte[] NewPayload { get; } = Enumerable.Repeat((byte)0x42, 2 * Mb).ToArray();
+        public List<string?> IfRangeHeaders { get; } = [];
+
+        public ChangingResourceServer(bool interruptFirst)
+        {
+            _interruptFirst = interruptFirst;
+            string prefix = $"http://127.0.0.1:{TestPort.Allocate()}/";
+            Url = prefix + "file";
+            _listener.Prefixes.Add(prefix);
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var context = await _listener.GetContextAsync();
+                        try { await RespondAsync(context); }
+                        catch (Exception ex) when (ex is IOException or HttpListenerException or ObjectDisposedException or OperationCanceledException) { }
+                    }
+                }
+                catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException) { }
+            });
+        }
+
+        private async Task RespondAsync(HttpListenerContext context)
+        {
+            var response = context.Response;
+            if (context.Request.HttpMethod == "HEAD")
+            {
+                response.AddHeader("ETag", "\"old\"");
+                response.ContentLength64 = NewPayload.Length;
+                response.Close();
+                return;
+            }
+            IfRangeHeaders.Add(context.Request.Headers["If-Range"]);
+            if (Interlocked.Increment(ref _requests) == 1)
+            {
+                response.AddHeader("ETag", "\"old\"");
+                var range = context.Request.Headers["Range"]![6..].Split('-');
+                int from = int.Parse(range[0]);
+                int to = string.IsNullOrEmpty(range[1]) ? NewPayload.Length - 1 : int.Parse(range[1]);
+                response.StatusCode = 206;
+                response.AddHeader("Content-Range", $"bytes {from}-{to}/{NewPayload.Length}");
+                response.ContentLength64 = to - from + 1;
+                int length = _interruptFirst ? 32 * 1024 : to - from + 1;
+                await response.OutputStream.WriteAsync(Enumerable.Repeat((byte)0x11, length).ToArray(), _cts.Token);
+                if (_interruptFirst)
+                {
+                    await response.OutputStream.FlushAsync(_cts.Token);
+                    response.Abort();
+                    return;
+                }
+            }
+            else
+            {
+                response.AddHeader("ETag", "\"new\"");
+                response.StatusCode = 200;
+                response.ContentLength64 = NewPayload.Length;
+                await response.OutputStream.WriteAsync(NewPayload, _cts.Token);
+            }
+            response.Close();
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            _listener.Close();
+            _loop.GetAwaiter().GetResult();
+            _cts.Dispose();
         }
     }
 

@@ -59,15 +59,15 @@ internal static partial class BBDownConfigParser
     }
 
     /// <summary>
-    /// 从 <paramref name="index"/> 起，返回一个选项值的 token 数：值本身以 '-' 开头
-    /// （<c>--access-token -abc</c>、负数参数）时不被误判为下一个选项，只有"以 - 开头且是
-    /// 已知选项名"才终止收集。收集与跳过两条路径共用（I16）。
+    /// 配置选项最多消耗一个值。布尔选项只接受可选的 true/false，其他选项可接受
+    /// 以 '-' 开头的值，但不消耗下一个已知选项。
     /// </summary>
-    private static int CountOptionValueTokens(List<string> args, int index)
+    private static int CountOptionValueTokens(List<string> args, int index, string name)
     {
-        int i = index;
-        while (i < args.Count && (!args[i].StartsWith('-') || !CliOptionIndex.IsKnownOption(args[i]))) i++;
-        return i - index;
+        if (index >= args.Count || OptionName(name) != name) return 0;
+        if (!CliOptionIndex.TakesValue(name))
+            return bool.TryParse(args[index], out _) ? 1 : 0;
+        return CliOptionIndex.IsKnownOption(OptionName(args[index])) ? 0 : 1;
     }
 
     /// <summary>
@@ -197,12 +197,10 @@ internal static partial class BBDownConfigParser
                 continue;
             }
 
-            if (CliOptionIndex.TryGetCanonical(name, out var canonical))
+            if (CliOptionIndex.TryGetCanonical(OptionName(name), out var canonical))
             {
-                // 收集该选项的值。仅当"以 - 开头且是已知选项名"时才视为下一个选项终止收集：
-                // 否则配置文件里值本身以 - 开头（如 --access-token -abc、负数参数）会被误当选项丢弃。
-                // 收集（命令行未指定）与跳过（命令行已显式指定）共用同一计数（I16 前是两段逐字相同的 while）。
-                int valueCount = CountOptionValueTokens(configArgs, i + 1);
+                // 值和位置参数分开处理，命令行覆盖选项时不能同时丢掉后面的 URL。
+                int valueCount = CountOptionValueTokens(configArgs, i + 1, name);
                 if (!explicitOptions.Contains(canonical))
                 {
                     result.Add(name);

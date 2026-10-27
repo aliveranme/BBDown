@@ -134,6 +134,12 @@ public class ServeApiHttpTests
     public async Task AddTask_UnresolvableUrl_Returns202AndProducesFailedTask()
     {
         using var server = new RunningServer();
+        var notified = new TaskCompletionSource<DownloadTask>(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.Server.CompletionNotifier = (task, _) =>
+        {
+            notified.TrySetResult(task.Snapshot());
+            return Task.CompletedTask;
+        };
         // "zz-not-a-real-url" 在 UrlResolver.ResolveAsync 本地抛 ArgumentException，
         // 不会触发网络请求；ProcessDownloadTaskAsync 捕获后把已入队任务标记失败
         using var content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
@@ -156,6 +162,9 @@ public class ServeApiHttpTests
         Assert.False(string.IsNullOrEmpty(finished[0].ErrorMessage));
         // JobId 已持久化且与响应体一致：查询/取消可按它命中
         Assert.Equal(accepted.TaskId, finished[0].JobId);
+        var callbackTask = await notified.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(accepted.TaskId, callbackTask.JobId);
+        Assert.Equal(DownloadTaskStatus.Failed, callbackTask.Status);
     }
 
     [Fact]
@@ -442,6 +451,12 @@ public class ServeApiHttpTests
         // /cancel 快乐路径：真实任务（排队等待并发闸门）被取消后必须标记 Cancelled、
         // 移入 finished 并持久化——此前该路径零覆盖。
         using var server = new RunningServer(maxConcurrent: 1);
+        var notified = new TaskCompletionSource<DownloadTask>(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.Server.CompletionNotifier = (task, _) =>
+        {
+            notified.TrySetResult(task.Snapshot());
+            return Task.CompletedTask;
+        };
         // 占用唯一并发执行槽：让后续任务停在"排队等待闸门"状态，
         // 无需真实慢任务/网络依赖即可验证排队取消路径。
         Assert.True(server.Server.TryAcquireConcurrencySlot(), "应能占用并发闸门");
@@ -462,6 +477,9 @@ public class ServeApiHttpTests
         var task = Assert.Single(finished);
         Assert.Equal(DownloadTaskStatus.Cancelled, task.Status);
         Assert.Equal(accepted.TaskId, task.JobId);
+        var callbackTask = await notified.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(accepted.TaskId, callbackTask.JobId);
+        Assert.Equal(DownloadTaskStatus.Cancelled, callbackTask.Status);
 
         // 持久化文件里也是 Cancelled（重启可恢复）。/get-tasks 可见任务早于
         // PersistFinishedTasks 写盘完成（二者之间存在短暂窗口），轮询等待落盘。

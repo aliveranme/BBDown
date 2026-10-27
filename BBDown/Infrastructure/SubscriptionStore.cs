@@ -23,6 +23,7 @@ public sealed class SubscriptionDataCorruptException : InvalidOperationException
 
 [JsonSerializable(typeof(List<Subscription>))]
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 internal partial class SubscriptionJsonContext : JsonSerializerContext
 {
 }
@@ -42,6 +43,7 @@ public static class SubscriptionStore
 
     private static string SubFile => Path.Combine(StoreRoot, "BBDownSubscriptions.json");
     private static string HistoryFile => Path.Combine(StoreRoot, "BBDownSubscriptions.history.json");
+    private static string DirectoryMapFile => Path.Combine(StoreRoot, "BBDownSubscriptions.directories.json");
 
     /// <summary>
     /// 把损坏的持久化文件隔离为 .corrupt-毫秒-GUID 并返回隔离路径；返回 null 表示隔离失败
@@ -61,6 +63,19 @@ public static class SubscriptionStore
         {
             return null;
         }
+    }
+
+    // 缺失文件不一定是首次运行：隔离副本存在时要求用户先恢复原文件或显式移走副本，
+    // 防止下次进程启动后把损坏数据当作空数据并覆盖历史。
+    private static void ThrowIfIsolatedFileExists(string path)
+    {
+        var dir = Path.GetDirectoryName(path)!;
+        if (!Directory.Exists(dir)) return;
+        string pattern = Path.GetFileName(path) + ".corrupt-*";
+        string? isolated = Directory.EnumerateFiles(dir, pattern).FirstOrDefault();
+        if (isolated is not null)
+            throw new SubscriptionDataCorruptException(
+                $"数据文件 {path} 缺失，发现隔离副本 {isolated}。请恢复文件，或确认放弃数据后移走隔离副本", new InvalidDataException("存在尚未恢复的隔离数据"));
     }
 
     // 走 JsonTypeInfo 的序列化：AOT 裁剪安全，且可自定义缩进与不转义非 ASCII
@@ -128,7 +143,11 @@ public static class SubscriptionStore
     {
         try
         {
-            if (!File.Exists(SubFile)) return [];
+            if (!File.Exists(SubFile))
+            {
+                ThrowIfIsolatedFileExists(SubFile);
+                return [];
+            }
             return JsonSerializer.Deserialize(await File.ReadAllTextAsync(SubFile, cancellationToken),
                 SubscriptionJsonContext.Default.ListSubscription) ?? [];
         }
@@ -216,7 +235,11 @@ public static class SubscriptionStore
     /// </summary>
     private static async Task<Dictionary<string, List<string>>> ReadHistoryLockedAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(HistoryFile)) return [];
+        if (!File.Exists(HistoryFile))
+        {
+            ThrowIfIsolatedFileExists(HistoryFile);
+            return [];
+        }
         try
         {
             using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(HistoryFile, cancellationToken));
@@ -249,6 +272,63 @@ public static class SubscriptionStore
             string? corrupt = IsolateCorruptFile(HistoryFile);
             Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止当前操作以避免重复下载或丢失历史");
             throw new SubscriptionDataCorruptException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
+        }
+    }
+
+    /// <summary>
+    /// 持久化目录分配，包含已移除订阅的槽位：不能把旧目录再分配给其他订阅。
+    /// 首次运行按订阅原顺序分配，与旧版目录命名兼容。
+    /// </summary>
+    internal static async Task<Dictionary<string, string>> ResolveDirectoriesAsync(
+        IReadOnlyList<Subscription> subs, CancellationToken cancellationToken = default)
+    {
+        await _ioLock.WaitAsync(cancellationToken);
+        try
+        {
+            Dictionary<string, string> mapping;
+            if (!File.Exists(DirectoryMapFile))
+            {
+                ThrowIfIsolatedFileExists(DirectoryMapFile);
+                mapping = [];
+            }
+            else
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(DirectoryMapFile, cancellationToken));
+                    if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("目录映射根节点不是对象");
+                    mapping = new Dictionary<string, string>();
+                    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind != JsonValueKind.String) throw new JsonException("目录映射值不是字符串");
+                        string? name = prop.Value.GetString();
+                        if (string.IsNullOrEmpty(name) || PathUtil.GetValidFileName(name, filterSlash: true, maxBaseNameLength: 255) != name || !names.Add(name) || !mapping.TryAdd(prop.Name, name))
+                            throw new JsonException("目录映射包含无效或重复的目录名");
+                    }
+                }
+                catch (Exception ex) when (ExceptionPolicies.IsJsonOrIoFailure(ex))
+                {
+                    string? isolated = IsolateCorruptFile(DirectoryMapFile);
+                    throw new SubscriptionDataCorruptException($"订阅目录映射损坏，已隔离为 {isolated ?? DirectoryMapFile}，请检查后恢复", ex);
+                }
+            }
+
+            var used = new HashSet<string>(mapping.Values, StringComparer.OrdinalIgnoreCase);
+            bool changed = false;
+            foreach (var sub in subs)
+            {
+                if (mapping.ContainsKey(sub.Target)) continue;
+                mapping[sub.Target] = Commands.SubCheckCommand.ResolveSubDirName(sub, used);
+                changed = true;
+            }
+            if (changed)
+                await AtomicWriteAsync(DirectoryMapFile, ToJson(mapping, SubscriptionJsonContext.Default.DictionaryStringString), cancellationToken);
+            return mapping;
+        }
+        finally
+        {
+            _ioLock.Release();
         }
     }
 
