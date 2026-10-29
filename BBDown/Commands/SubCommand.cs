@@ -118,14 +118,6 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     {
         try
         {
-            // 批量检查期间 Ctrl+C 会取消当前下载；直接退出进程则等效于整体取消。
-            var subs = await SubscriptionStore.LoadAsync(cancellationToken);
-            if (subs.Count == 0)
-            {
-                Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
-                return 0;
-            }
-
             // --delay-per-item 越界与 -w 同待遇：整批无效的输入错误 → 明确报错 + 退出码 1，
             // 且必须在 InitializeRequestSessionAsync（首次网络请求）之前判掉。
             // 不抛 ArgumentException：ExecuteAsync 只捕获 OperationCanceledException，抛出去会
@@ -137,6 +129,14 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
             {
                 Logger.LogError(delayError);
                 return 1;
+            }
+
+            // 批量检查期间 Ctrl+C 会取消当前下载；直接退出进程则等效于整体取消。
+            var subs = await SubscriptionStore.LoadAsync(cancellationToken);
+            if (subs.Count == 0)
+            {
+                Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
+                return 0;
             }
 
             // -w 必须先绝对化且只解析一次（RF-89）：ChangeWorkingDir（CLI 非 serve）会把进程
