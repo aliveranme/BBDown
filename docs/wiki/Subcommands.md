@@ -86,7 +86,7 @@ BBDown 支持对指定的 UP 主、番剧或合集进行订阅追踪，通过增
 | `BBDown sub check [选项]` | 增量拉取所有订阅的新视频 | `BBDown sub check -q "1080P 高码率"` |
 | `BBDown sub check --per-sub-dir` | 每个订阅下载到独立子目录 | `BBDown sub check -w "E:\\Download\\bbdown" --per-sub-dir` |
 | `BBDown sub check --full-scan` | 禁用增量提前结束，重扫全部投稿列表页 | `BBDown sub check --full-scan` |
-| `BBDown sub check --delay-per-item <秒>` | 每个新增内容下载前 / 每个订阅检查前停顿指定秒数（防风控） | `BBDown sub check --delay-per-item 5` |
+| `BBDown sub check --delay-per-item <秒>` | 每个新增内容下载前 / 每个订阅检查前停顿指定秒数（0~600；超界值即使无订阅也报错） | `BBDown sub check --delay-per-item 5` |
 
 > **请求节流 (`--delay-per-item`)**：`sub check` 默认会**不间断**地连续处理：每检查一个订阅，立刻把该订阅的全部新增稿件逐个下载（每个 aid 一个独立任务：解析 playurl + 分片下载）。刚添加一个投稿很多的 UP 主时，这种"一次性连发几十到上百个请求"很容易触发 B 站风控（列表 HTTP 412 / `code=-352`，或 playurl 返回 `v_voucher` 人机验证）。`--delay-per-item <秒>` 在**每个工作单元（开始检查一个订阅 / 下载一个新增内容）之前**停顿指定秒数，首个动作不等待，把请求均匀摊开——例如 `--delay-per-item 5` 配 200 个新增稿件约 17 分钟跑完，风控窗口内被拒的概率显著下降。默认 `0` = 不等待（与加入该选项前行为一致），取值范围 `0 ~ 600`。单个订阅的日常"没有新增"检查只发 1~2 个列表请求、且首个动作不等待，几乎不产生额外停顿；但**多订阅时每个订阅开始检查之前仍会各停顿一次**——N 个订阅即使全部无新增，也会比不加间隔多耗约 (N−1)×间隔 秒。注意它**不是** `--delay-per-page`（那个只在多分 P 稿件内部生效，对订阅检查几乎不起作用）。
 

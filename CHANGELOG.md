@@ -2,6 +2,16 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.7.8] - 2026-10-30
+
+### 修复
+
+- **空订阅时仍校验订阅节流参数**：`sub check --delay-per-item` 超出 `0 ~ 600` 秒时始终报错并返回退出码 1；此前没有订阅时会提前返回成功。
+
+### 工程与验证
+
+- 增加仓库级 mise 配置，固定 .NET SDK `10.0.302`，与 `global.json` 的 `latestPatch` 范围一致。
+
 ## [1.7.7] - 2026-10-14
 
 ### 新增
@@ -636,7 +646,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.7...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.7.8...HEAD
+[1.7.8]: https://github.com/AliverAnme/BBDown/compare/v1.7.7...v1.7.8
 [1.7.7]: https://github.com/AliverAnme/BBDown/compare/v1.7.6...v1.7.7
 [1.7.6]: https://github.com/AliverAnme/BBDown/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AliverAnme/BBDown/compare/v1.7.4...v1.7.5
