@@ -1288,14 +1288,21 @@ internal static class BBDownDownloadUtil
             {
                 return (false, "续传清单分片布局缺失或与当前分片大小不一致");
             }
-            // 一方有可用校验器而另一方没有时，也无法证明已有字节属于当前版本。
-            var currentValidator = SelectIfRange(currentETag, currentLastModified);
-            var previousValidator = SelectIfRange(m.ETag, m.LastModified);
-            if ((currentValidator is null) != (previousValidator is null))
+            // 双方必须至少有一种**同类型**校验器可比较：一方有校验器而另一方没有，
+            // 或两边只有不同类型（一方 ETag、另一方 Last-Modified）时，无法证明已有
+            // 字节属于当前版本，拒绝续传。双方都没有校验器时沿用旧行为（身份+长度），
+            // 不能一律拒绝（部分 CDN 不返回 ETag/Last-Modified）。
+            // 同类校验器存在时按下面的同类型比较判定——不能按"每侧优先选一个"比较：
+            // 清单记了 ETag+LM、本次探测只返回 LM（同一对象，CDN 边缘头不一致）时，
+            // 拿 ETag 对 LM 会误判"不一致"，删掉可安全续传的完整 .tmp/成品并整份重下。
+            bool currentHasValidator = currentETag is not null || !string.IsNullOrEmpty(currentLastModified);
+            bool previousHasValidator = m.ETag is not null || !string.IsNullOrEmpty(m.LastModified);
+            if (currentHasValidator != previousHasValidator)
                 return (false, "续传清单与当前探测缺少可比较的资源校验器");
-            if (currentValidator is not null && previousValidator is not null
-                && !string.Equals(currentValidator, previousValidator, StringComparison.Ordinal))
-                return (false, "续传清单与当前探测的资源校验器不一致");
+            bool comparableETag = currentETag is not null && m.ETag is not null;
+            bool comparableLastModified = !string.IsNullOrEmpty(currentLastModified) && !string.IsNullOrEmpty(m.LastModified);
+            if (currentHasValidator && !comparableETag && !comparableLastModified)
+                return (false, "续传清单与当前探测的校验器类型不同，无法比较");
             if (currentETag is not null && m.ETag is not null && currentETag != m.ETag)
             {
                 return (false, $"服务器 ETag 已变化（{m.ETag} → {currentETag}），内容不可信");

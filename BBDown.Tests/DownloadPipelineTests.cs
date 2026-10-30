@@ -620,6 +620,69 @@ public class DownloadPipelineTests
     }
 
     /// <summary>
+    /// 回归：清单同时记录了 ETag 与 Last-Modified，而本次探测只返回 Last-Modified（同一对象，
+    /// CDN 边缘头不一致）。同类型校验器 Last-Modified 一致即可续传——若按"每侧优先选一个
+    /// 校验器"比较，会拿清单 ETag 对本次 Last-Modified，误删可安全续传的进度。
+    /// </summary>
+    [Fact]
+    public async Task CanResumeFrom_ManifestHasEtagAndLastModified_ProbeOnlyLastModified_Resumes()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var tmp = Path.Combine(dir, "video.mp4.tmp");
+            File.WriteAllText(tmp, "prefix");
+            const string lastModified = "Wed, 01 Jan 2025 00:00:00 GMT";
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/video.mp4?deadline=1&sign=old"),
+                12345, lastModified, "\"v1\"");
+            File.WriteAllText(tmp + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            var (canResume, reason) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345,
+                currentETag: null, currentLastModified: lastModified);
+            Assert.True(canResume, reason);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// 回归：双方校验器类型不相交（清单只有 ETag、本次探测只有 Last-Modified）时无法证明
+    /// 已有字节属于当前版本，必须拒绝续传——不能因为"两边各有一个校验器"就放行。
+    /// </summary>
+    [Fact]
+    public async Task CanResumeFrom_DisjointValidatorKinds_RejectsResume()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var tmp = Path.Combine(dir, "video.mp4.tmp");
+            File.WriteAllText(tmp, "prefix");
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/video.mp4?deadline=1&sign=old"),
+                12345, null, "\"v1\"");
+            File.WriteAllText(tmp + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            var (canResume, reason) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345,
+                currentETag: null, currentLastModified: "Wed, 01 Jan 2025 00:00:00 GMT");
+            Assert.False(canResume);
+            Assert.Contains("校验器", reason);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
     /// 回归（aria2c --continue=true）：跨资源且长度恰相等的残留 partial 必须被删除重下，
     /// 不得被"已完整下载"跳过——否则残缺文件会直接作为成品进入混流。此前纯 length-only
     /// 跳过先于身份校验执行，等长跨资源残留被误跳过。
