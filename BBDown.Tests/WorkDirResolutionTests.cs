@@ -298,10 +298,11 @@ public class WorkDirResolutionTests
         try
         {
             Environment.CurrentDirectory = root;
+            var effectiveRoot = Environment.CurrentDirectory;
             Assert.True(Program.TryResolveWorkDir("out", out var resolved, out var error));
             Assert.Equal("", error);
             Assert.True(Path.IsPathFullyQualified(resolved), "-w 必须解析为绝对路径，否则无法跨任务复用");
-            Assert.Equal(Path.Combine(root, "out"), resolved);
+            Assert.Equal(Path.Combine(effectiveRoot, "out"), resolved);
 
             // 缺陷复现（旧行为）：CWD 漂移后继续用相对 -w 解析会再拼一层
             Environment.CurrentDirectory = resolved; // 等价于 ChangeWorkingDir 的副作用
