@@ -101,9 +101,9 @@ public class ToolPathWarningTests
         try
         {
             const string toolRel = "relative-ffmpeg.exe";
-            var toolAbs = Path.Combine(dir, toolRel);
-            File.WriteAllText(toolAbs, "");
             Environment.CurrentDirectory = dir;
+            var toolAbs = Path.Combine(Environment.CurrentDirectory, toolRel);
+            File.WriteAllText(toolAbs, "");
             var option = new MyOption
             {
                 SkipMux = true,
