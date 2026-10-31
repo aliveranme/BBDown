@@ -215,7 +215,46 @@ internal static partial class BBDownConfigParser
             }
         }
 
-        Logger.LogDebug("新的命令行参数: " + string.Join(" ", result));
+        MergeWithConfigForTest(result);
         return result;
+    }
+
+    /// <summary>
+    /// 供测试直接调用同步日志路径：MergeWithConfigAsync 的日志段抽到这里，
+    /// 断言掩码行为不必走异步文件 IO。
+    /// </summary>
+    internal static List<string> MergeWithConfigForTest(List<string> result)
+    {
+        // 调试日志只用于排障：凭据选项的值（配置文件正是为把 -c/--access-token 移出 ps/argv
+        // 而生）一律掩码，不随 --debug 进入终端/CI 控制台（与 Workflow 运行参数日志同约定）。
+        // 等号写法只掩值段，选项名保留（排障时仍能看出凭据来自哪个选项）。
+        Logger.LogDebug("新的命令行参数: " +
+            string.Join(" ", result.Select(a =>
+            {
+                if (!IsSensitiveOptionValue(result, a)) return a;
+                var name = OptionName(a);
+                return name == a ? SensitiveDataMasker.MaskValue(a) : name + "=" + SensitiveDataMasker.MaskValue(a[(name.Length + 1)..]);
+            })));
+        return result;
+    }
+
+    /// <summary>
+    /// 合并结果里 <paramref name="token"/> 是否是凭据选项（-c/--cookie、--access-token）
+    /// 消费的值：空格写法匹配下一 token，等号写法匹配内联值。
+    /// </summary>
+    private static bool IsSensitiveOptionValue(List<string> args, string token)
+    {
+        for (int i = 0; i < args.Count; i++)
+        {
+            var name = OptionName(args[i]);
+            if (!CliOptionIndex.TakesValue(name)) continue;
+            if (name is not ("-c" or "--cookie" or "--access-token")) continue;
+            if (name == args[i])
+            {
+                if (i + 1 < args.Count && args[i + 1] == token) return true;
+            }
+            else if (name == OptionName(token)) return true; // 等号写法：token 为 "--opt=值"
+        }
+        return false;
     }
 }

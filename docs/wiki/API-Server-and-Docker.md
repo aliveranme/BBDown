@@ -171,6 +171,7 @@ services:
     volumes:
       # serve 以进程 CWD（镜像内为 /app）为工作目录：下载产物、bbdown-tasks.json、
       # bbdown-api.log 与 BBDown.data/device.wvd 均在 /app 下。挂载 /app 持久化。
+      # bbdown-tasks.json / bbdown-api.log / BBDown.data 在 Unix 上均为仅属主可读写（chmod 600）。
       - /mnt/storage/bbdown:/app
     command:
       - "serve"

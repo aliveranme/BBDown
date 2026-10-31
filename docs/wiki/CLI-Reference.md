@@ -107,6 +107,16 @@ BBDown [选项] <URL或标识符>
 | `-u` | `--user-agent` | `string ("")` | 指定自定义 User-Agent 请求头 |
 | | `--debug` | `bool (false)` | 输出详细调试日志（含请求头与异常堆栈） |
 
+以下为兼容旧版本命令行保留的**隐藏弃用选项**（`--help` 不显示，运行时打印弃用告警并映射到现行选项，不建议新脚本使用）：
+
+| 长选项 | 现行替代 |
+| :--- | :--- |
+| `--aria2c-proxy <host>` | `--aria2c-args`（运行时自动追加该代理参数） |
+| `--only-hevc` / `--only-avc` / `--only-av1` | `--encoding-priority`（运行时自动置顶对应编码） |
+| `--add-dfn-subfix` | `--file-pattern` / `--multi-file-pattern`（模板中加 `[<dfn>]`） |
+| `--no-padding-page-num` | `--file-pattern` / `--multi-file-pattern`（模板自定义分 P 编号格式） |
+| `--bandwith-ascending`（拼写沿袭旧版） | `--video-ascending` 与 `--audio-ascending` |
+
 ---
 
 ## 3. 分类参数详解
