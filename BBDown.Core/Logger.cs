@@ -66,8 +66,17 @@ public static class Logger
             // 也允许 Windows 上外部删除/轮转（File.Delete 需要 FILE_SHARE_DELETE）。
             // 注意：默认 FileShare.Read 的读取器（File.ReadAllText）在 Windows 上仍会因不授予
             // 写共享而失败——这是"持有一个写句柄"的固有属性，读日志请用 tail/Get-Content。
-            var fs = new FileStream(_logFilePath, FileMode.Append, FileAccess.Write,
-                FileShare.ReadWrite | FileShare.Delete);
+            // Unix 上创建即 owner-only（与 BBDown.data 凭据文件同约定）：serve 日志含任务路径、
+            // URL 等按仓库约定属敏感的操作者活动，不应以 umask 默认的组/其他可读落盘。
+            var opts = new FileStreamOptions
+            {
+                Mode = FileMode.Append,
+                Access = FileAccess.Write,
+                Share = FileShare.ReadWrite | FileShare.Delete,
+            };
+            if (!OperatingSystem.IsWindows())
+                opts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            var fs = new FileStream(_logFilePath, opts);
             return new StreamWriter(fs, new UTF8Encoding(false)) { AutoFlush = true };
         }
         catch (Exception ex) when (ExceptionPolicies.IsBestEffortFailure(ex))

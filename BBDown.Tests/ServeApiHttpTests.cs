@@ -606,6 +606,50 @@ public class ServeApiHttpTests
     }
 
     [Fact]
+    public async Task PersistFinishedTasks_CreatesOwnerOnlyTaskFile()
+    {
+        // 任务记录含绝对路径/提交 URL（仓库自身按敏感数据对待：/get-tasks no-store、错误消息净化），
+        // Unix 上落盘必须创建即 owner-only（对齐 BBDown.data 凭据文件），不能依赖 umask。
+        if (OperatingSystem.IsWindows()) return;
+
+        using var server = new RunningServer();
+        using (var content = JsonContent.Create(new { Url = "zz-owner-mode-check" }))
+        using (await server.Client.PostAsync("/add-task", content))
+        {
+        }
+        await WaitForFinishedTasksAsync(server.Client);
+
+        Assert.True(File.Exists(server.TaskFile), $"任务文件 {server.TaskFile} 应存在");
+        var mode = File.GetUnixFileMode(server.TaskFile);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode & ~UnixFileMode.OtherRead & ~UnixFileMode.GroupRead);
+    }
+
+    [Fact]
+    public void Logger_CreateFileWriter_CreatesOwnerOnlyLogFile()
+    {
+        // serve 日志（bbdown-api.log）同约定：创建即 owner-only，无 umask 依赖窗口
+        if (OperatingSystem.IsWindows()) return;
+
+        var logPath = Path.Combine(Path.GetTempPath(), $"bbdown-log-{Guid.NewGuid():N}.log");
+        var prevPath = BBDown.Core.Logger.LogFilePath;
+        try
+        {
+            BBDown.Core.Logger.LogFilePath = logPath;
+            BBDown.Core.Logger.Log("owner-mode-probe");
+            BBDown.Core.Logger.CloseFile();
+
+            Assert.True(File.Exists(logPath), $"日志文件未创建: {logPath}");
+            var mode = File.GetUnixFileMode(logPath);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode & ~UnixFileMode.OtherRead & ~UnixFileMode.GroupRead);
+        }
+        finally
+        {
+            BBDown.Core.Logger.LogFilePath = prevPath;
+            if (File.Exists(logPath)) File.Delete(logPath);
+        }
+    }
+
+    [Fact]
     public async Task AddTask_QueueFull_Returns429()
     {
         using var server = new RunningServer(maxConcurrent: 1);

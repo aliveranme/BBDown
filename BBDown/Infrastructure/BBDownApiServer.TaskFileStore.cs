@@ -55,8 +55,13 @@ public partial class BBDownApiServer
                 var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
                 // tmp 名带 GUID（对齐 SubscriptionStore.AtomicWrite）：固定 .tmp 名会让同目录
                 // 的多个 serve 实例并发写盘互相踩踏；代价是崩溃瞬间可能残留孤儿 tmp 文件（罕见且无害）。
+                // Unix 上创建即 owner-only（对齐 BBDown.data）：任务记录含绝对路径/提交 URL，
+                // 不应以 umask 默认的组/其他可读落盘；Windows 无此语义，保持原样。
                 var tmpFile = _taskFile + $".tmp-{Guid.NewGuid():N}";
-                using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                var writeOpts = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
+                if (!OperatingSystem.IsWindows())
+                    writeOpts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                using (var fs = new FileStream(tmpFile, writeOpts))
                 using (var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
                 {
                     writer.Write(json);

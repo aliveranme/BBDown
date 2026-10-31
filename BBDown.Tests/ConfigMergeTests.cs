@@ -1,3 +1,6 @@
+using BBDown.Core;
+using BBDown.Core.Util;
+
 namespace BBDown.Tests;
 
 /// <summary>
@@ -202,5 +205,96 @@ public class ConfigMergeTests
         Assert.Equal(["URL"], BBDownConfigParser.GetPositionalTokens(
             ["--config-file", "x.config", "--debug", "--aria2c-proxy=http://127.0.0.1:7890", "-p", "2", "URL"]));
         Assert.Empty(BBDownConfigParser.GetPositionalTokens(["--aria2c-proxy", "http://127.0.0.1:7890"]));
+    }
+
+    /// <summary>捕获 LogDebug 期间的控制台输出（Logger 直接写 Console）。</summary>
+    private static string CaptureConsole(Action action)
+    {
+        var original = Console.Out;
+        using var sw = new StringWriter();
+        try
+        {
+            Console.SetOut(sw);
+            action();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+        return sw.ToString();
+    }
+
+    [Theory]
+    [InlineData("-c")]
+    [InlineData("--cookie")]
+    [InlineData("--access-token")]
+    public async Task MergedArgvDebugLog_MasksCredentialValues(string option)
+    {
+        // 配置文件正是为把凭据移出 ps/argv 而生；--debug 下合并日志若原样回显，
+        // 会话凭据直接进终端/CI 控制台。合并列表本身必须保留真实值（Spectre 要用），
+        // 掩码只发生在日志输出层：日志含掩码标记、不含明文凭据。
+        var secret = Guid.NewGuid().ToString("N") + "-SESSDATA";
+        var cfg = WriteConfig($"{option} {secret}\n");
+        var prev = Config.Current;
+        Config.Apply(prev with { DebugLog = true });
+        try
+        {
+            var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg]);
+            Assert.Contains(secret, merged);
+
+            var logged = CaptureConsole(() => BBDownConfigParser.MergeWithConfigForTest(merged));
+            Assert.Contains("***", logged);
+            Assert.DoesNotContain(secret, logged);
+        }
+        finally
+        {
+            Config.Apply(prev);
+            File.Delete(cfg);
+        }
+    }
+
+    [Fact]
+    public async Task MergedArgvDebugLog_MasksEqualsStyleCredentialValue()
+    {
+        // 等号写法合并为单个 token "--access-token=值"：日志只掩值段，选项名保留
+        var secret = Guid.NewGuid().ToString("N") + "-TOKEN";
+        var cfg = WriteConfig($"--access-token={secret}\n");
+        var prev = Config.Current;
+        Config.Apply(prev with { DebugLog = true });
+        try
+        {
+            var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg]);
+            Assert.Contains($"--access-token={secret}", merged);
+
+            var logged = CaptureConsole(() => BBDownConfigParser.MergeWithConfigForTest(merged));
+            Assert.Contains("--access-token=", logged);
+            Assert.Contains("***", logged);
+            Assert.DoesNotContain(secret, logged);
+        }
+        finally
+        {
+            Config.Apply(prev);
+            File.Delete(cfg);
+        }
+    }
+
+    [Fact]
+    public void MergedArgvDebugLog_DoesNotTouchNonCredentialValues()
+    {
+        // 掩码只作用于凭据选项的值；普通选项值与 URL 必须原样进日志（排障能力不回退）
+        var prev = Config.Current;
+        Config.Apply(prev with { DebugLog = true });
+        try
+        {
+            var merged = new List<string> { "--work-dir", "/tmp/download", "--aria2c-proxy=http://127.0.0.1:7890", "URL" };
+            var logged = CaptureConsole(() => BBDownConfigParser.MergeWithConfigForTest(merged));
+            Assert.Contains("/tmp/download", logged);
+            Assert.Contains("http://127.0.0.1:7890", logged);
+            Assert.Contains(" URL", logged);
+        }
+        finally
+        {
+            Config.Apply(prev);
+        }
     }
 }
