@@ -84,6 +84,9 @@ BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_to
     "TaskId": "c7a8b9e0-1234-5678-90ab-cdef12345678"
   }
   ```
+
+> 接口在任务登记并生成 JobId 后返回 `202 Accepted`。URL 解析、下载与完成记录持久化由后台任务处理，不会阻塞 `/add-task` 请求。即使 URL 无法解析，也可凭 JobId 查询失败状态。
+
 - **错误状态码**：
   - `400 Bad Request`：请求体不是合法 JSON。
   - `401 Unauthorized`：缺少或错误的 `X-Serve-Token`。

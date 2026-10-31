@@ -134,8 +134,9 @@ public partial class BBDownApiServer
     /// 变成无人观察的 Task 异常）。占位释放必须在任务完成（含取消/失败）后，
     /// 否则队列上限会因已结束任务占位不释放而逐渐耗尽。
     /// </summary>
-    private async Task RunAcceptedTaskAsync(MyOption option, DownloadTask task)
+    private async Task RunAcceptedTaskAsync(MyOption option, DownloadTask task, Task startSignal)
     {
+        await startSignal.ConfigureAwait(false);
         try
         {
             await ProcessDownloadTaskAsync(option, task, _notifyWebhook, _serverLifetimeCts.Token);

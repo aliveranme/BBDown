@@ -119,6 +119,49 @@ public class ServeApiHttpTests
     }
 
     [Fact]
+    public async Task AddTask_ReturnsAcceptedBeforeTaskPersistenceCompletes()
+    {
+        using var server = new RunningServer();
+        var persistLock = typeof(BBDownApiServer)
+            .GetField("_persistLock", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .GetValue(null)!;
+        var lockEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseLock = new ManualResetEventSlim();
+        var lockHolder = Task.Factory.StartNew(
+            () =>
+            {
+                lock (persistLock)
+                {
+                    lockEntered.TrySetResult();
+                    releaseLock.Wait();
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+        try
+        {
+            await lockEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            using var content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
+            var responseTask = server.Client.PostAsync("/add-task", content);
+            bool returnedBeforePersistence = await Task.WhenAny(responseTask, Task.Delay(TimeSpan.FromSeconds(5))) == responseTask;
+            releaseLock.Set();
+            await lockHolder;
+
+            using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(returnedBeforePersistence, "/add-task waited for synchronous task persistence before returning");
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            await WaitForFinishedTasksAsync(server.Client);
+        }
+        finally
+        {
+            releaseLock.Set();
+            await lockHolder;
+        }
+    }
+
+    [Fact]
     public async Task AddTask_OversizedBody_Returns413()
     {
         using var server = new RunningServer();
@@ -593,6 +636,7 @@ public class ServeApiHttpTests
         {
         }
         await WaitForFinishedTasksAsync(server.Client);
+        await WaitForTaskFileAsync(server.TaskFile);
 
         // 持久化文件应存在且是合法 JSON
         Assert.True(File.Exists(server.TaskFile), $"任务文件 {server.TaskFile} 应存在");
@@ -618,6 +662,7 @@ public class ServeApiHttpTests
         {
         }
         await WaitForFinishedTasksAsync(server.Client);
+        await WaitForTaskFileAsync(server.TaskFile);
 
         Assert.True(File.Exists(server.TaskFile), $"任务文件 {server.TaskFile} 应存在");
         var mode = File.GetUnixFileMode(server.TaskFile);
@@ -740,6 +785,16 @@ public class ServeApiHttpTests
 
     private static Task<List<DownloadTask>> WaitForFinishedTasksAsync(HttpClient client)
         => WaitForFinishedCountAsync(client, 1);
+
+    private static async Task WaitForTaskFileAsync(string path)
+    {
+        for (int i = 0; i < 40; i++)
+        {
+            if (File.Exists(path)) return;
+            await Task.Delay(100);
+        }
+        Assert.True(File.Exists(path), $"任务文件 {path} 未在 4 秒内持久化");
+    }
 
     private static async Task<List<DownloadTask>> GetFinishedTasksAsync(HttpClient client)
     {

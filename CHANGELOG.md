@@ -13,6 +13,7 @@
 - `--debug` 下配置合并日志不再回显 `-c/--cookie`、`--access-token` 的值（等号写法掩码值段、保留选项名）；合并结果本身保持原样传给命令解析。
 - serve 的任务记录（`bbdown-tasks.json`）与日志文件（`bbdown-api.log`）在 Unix 上创建即为仅属主可读写（chmod 600），与凭据文件 `BBDown.data` 一致，不再依赖 umask；两文件含绝对路径与提交 URL，属敏感操作者数据。
 - serve 拒绝跨 localhost 端口的浏览器写请求，补拦 Webhook DNS 返回的全零地址，并避免回调 URL 凭据写入日志；启动时也会收紧已有任务记录与日志文件的 Unix 权限。
+- serve 的 `/add-task` 先登记在途任务再异步启动执行；本地解析失败及任务记录落盘不再阻塞 `202 Accepted` 响应。
 
 ## [1.7.8] - 2026-10-30
 
