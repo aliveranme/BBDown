@@ -23,7 +23,7 @@ public partial class BBDownApiServer
 
     /// <summary>
     /// 回调地址 SSRF 防护：仅允许 http/https 绝对地址，
-    /// 且禁止指向回环（127.0.0.1/::1/localhost）、链路本地（169.254.x / fe80::）与
+    /// 且禁止指向回环（127.0.0.1/::1/localhost）、全零地址（0.0.0.0/::）、链路本地（169.254.x / fe80::）与
     /// 云元数据面（169.254.0.0/16）。RFC1918 私网段仅在回调 URL 是**字面 IP** 时放行
     /// （操作者直接配置的局域网回调是 serve 正常用法）；经域名解析出的内网地址一律拒绝，
     /// 防止攻击者用解析到内网的域名（DNS 重绑定）把回调打向内网。
@@ -123,13 +123,16 @@ public partial class BBDownApiServer
     }
 
     /// <summary>
-    /// 判定地址是否属于应拒绝的敏感/内网段：回环、链路本地、云元数据（169.254/16）、
+    /// 判定地址是否属于应拒绝的敏感/内网段：回环、全零地址、链路本地、云元数据（169.254/16）、
     /// RFC1918 私网段（10/8、172.16/12、192.168/16）、CGNAT（100.64/10）与 IPv6 ULA（fc00::/7）。
     /// </summary>
     private static bool IsBlockedAddress(IPAddress ip)
     {
         if (IPAddress.IsLoopback(ip)) return true;
         if (ip.IsIPv6LinkLocal) return true;
+        // DNS answers can also be the unspecified addresses. Connecting to 0.0.0.0 (and on
+        // some platforms ::) can route to this machine, so reject them just like literal IPs.
+        if (ip.GetAddressBytes().All(b => b == 0)) return true;
         if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
         {
             var b = ip.GetAddressBytes();
@@ -167,7 +170,7 @@ public partial class BBDownApiServer
         // 绑定到本次校验解析出的 IP，避免 HttpClient 再次做 DNS 解析（消除重绑定窗口）。
         if (!await IsSafeCallbackUrlAsync(notifyWebhook))
         {
-            Logger.LogWarn($"回调地址不合法，已跳过本次回调: {notifyWebhook}");
+            Logger.LogWarn($"回调地址不合法，已跳过本次回调: {WebhookTargetForLog(notifyWebhook)}");
             return;
         }
         // 序列化共享对象前用 Snapshot() 深拷贝：与 /get-tasks 查询端点一致，
@@ -186,6 +189,7 @@ public partial class BBDownApiServer
     /// </summary>
     private static async Task SendCallbackAsync(string webhook, string jsonContent)
     {
+        var logTarget = WebhookTargetForLog(webhook);
         try
         {
             var uri = new Uri(webhook);
@@ -200,7 +204,7 @@ public partial class BBDownApiServer
                 // IPv4-mapped → IPv4 的归一化已由 TryParseLiteralIp 完成。
                 if (IsUnsafeLiteralIpAddress(literalIp))
                 {
-                    Logger.LogWarn($"回调地址是敏感字面 IP，已跳过本次回调: {webhook}");
+                    Logger.LogWarn($"回调地址是敏感字面 IP，已跳过本次回调: {logTarget}");
                     return;
                 }
                 target = literalIp;
@@ -213,13 +217,13 @@ public partial class BBDownApiServer
                 switch (verdict)
                 {
                     case CallbackHostVerdict.DnsFailed:
-                        Logger.LogWarn($"回调地址 DNS 解析失败，已跳过本次回调: {webhook}");
+                        Logger.LogWarn($"回调地址 DNS 解析失败，已跳过本次回调: {logTarget}");
                         return;
                     case CallbackHostVerdict.NoAddresses:
-                        Logger.LogWarn($"回调地址解析结果为空，已跳过本次回调: {webhook}");
+                        Logger.LogWarn($"回调地址解析结果为空，已跳过本次回调: {logTarget}");
                         return;
                     case CallbackHostVerdict.Blocked:
-                        Logger.LogWarn($"回调地址解析到敏感地址，已跳过本次回调: {webhook}");
+                        Logger.LogWarn($"回调地址解析到敏感地址，已跳过本次回调: {logTarget}");
                         return;
                 }
                 // 解析结果可能含多个地址（已全部校验通过且已归一化），取第一个连接
@@ -235,7 +239,7 @@ public partial class BBDownApiServer
             if (!resp.IsSuccessStatusCode)
             {
                 // 升 Warn：回调失败意味着通知静默丢失，此前仅 LogDebug（默认抑制）无痕。
-                Logger.LogWarn($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
+                Logger.LogWarn($"回调返回 HTTP {(int)resp.StatusCode}: {logTarget}");
             }
         }
         // RF-55：放宽为 catch (Exception)——本 catch 的目的只是"回调失败不影响任务"，
@@ -245,8 +249,17 @@ public partial class BBDownApiServer
         catch (Exception e)
         {
             // 升 Warn：回调失败意味着通知静默丢失（任务本身已成功），需可观测。
-            Logger.LogWarn($"回调失败: {e.Message}");
+            // 异常消息可能包含完整 URL（包括 webhook token），只记录目标主机和异常类型。
+            Logger.LogWarn($"回调失败 ({logTarget}): {e.GetType().Name}");
         }
+    }
+
+    /// <summary>仅记录回调 URL 的 scheme、host 和 port，避免把 query、userinfo 或路径令牌写入日志。</summary>
+    private static string WebhookTargetForLog(string? webhook)
+    {
+        if (!Uri.TryCreate(webhook, UriKind.Absolute, out var uri)) return "<invalid webhook URL>";
+        var host = uri.Host;
+        return $"{uri.Scheme}://{host}:{uri.Port}";
     }
 
     internal static SocketsHttpHandler CreateCallbackHandler(IPAddress target) => new()

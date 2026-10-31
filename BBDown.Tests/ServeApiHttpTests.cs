@@ -384,10 +384,10 @@ public class ServeApiHttpTests
             Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
         }
 
-        // 回环 Origin（本地页面/管理脚本）不受影响
+        // 与 API 实际来源完全一致的回环 Origin 不受影响
         using (var okReq = new HttpRequestMessage(HttpMethod.Post, "/add-task"))
         {
-            okReq.Headers.TryAddWithoutValidation("Origin", "http://127.0.0.1:23333");
+            okReq.Headers.TryAddWithoutValidation("Origin", server.Client.BaseAddress!.GetLeftPart(UriPartial.Authority));
             okReq.Content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
             using var resp = await server.Client.SendAsync(okReq);
             Assert.Equal(HttpStatusCode.Accepted, resp.StatusCode);
@@ -621,7 +621,7 @@ public class ServeApiHttpTests
 
         Assert.True(File.Exists(server.TaskFile), $"任务文件 {server.TaskFile} 应存在");
         var mode = File.GetUnixFileMode(server.TaskFile);
-        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode & ~UnixFileMode.OtherRead & ~UnixFileMode.GroupRead);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
     }
 
     [Fact]
@@ -640,7 +640,7 @@ public class ServeApiHttpTests
 
             Assert.True(File.Exists(logPath), $"日志文件未创建: {logPath}");
             var mode = File.GetUnixFileMode(logPath);
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode & ~UnixFileMode.OtherRead & ~UnixFileMode.GroupRead);
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
         }
         finally
         {
