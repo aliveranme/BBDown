@@ -170,7 +170,7 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 
 服务端 Webhook 通知覆盖成功、失败和取消的任务终态，直连经过校验的回调地址，不使用系统代理。
 
-> 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。多用户环境下建议用环境变量 `BBDOWN_SERVE_TOKEN` 注入令牌，避免 `ps` 等进程列表暴露。`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
+> 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。多用户环境下建议用环境变量 `BBDOWN_SERVE_TOKEN` 注入令牌，避免 `ps` 等进程列表暴露。浏览器写请求只接受与 serve 请求同源（scheme、host、port 一致）的 Origin；`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
 
 ### 常用命令
 

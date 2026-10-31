@@ -32,7 +32,7 @@ public partial class BBDownApiServer
         //    攻击者网页可借此借用操作者本地 B 站凭据提交下载任务、刷满接受队列（DoS）
         //    或取消任务；DNS rebinding（攻击者域名解析到 127.0.0.1）时 Origin 仍是攻击者
         //    域名，同样被拒。这里对写端点（/add-task、/cancel、/remove-finished）校验
-        //    Origin 必须为回环来源，否则 403；/add-task 的请求体必须是 JSON Content-Type
+        //    Origin 必须与当前请求同源且为回环来源，否则 403；/add-task 的请求体必须是 JSON Content-Type
         //    （text/plain 正是"跨源可发但不触发预检"的载体，直接拒绝）。只读端点
         //    （/get-tasks）不校验 Origin，本地管理页面/脚本可正常查询。
         app.Use(async (context, next) =>
@@ -85,7 +85,8 @@ public partial class BBDownApiServer
                 if (isWriteApi)
                 {
                     var origin = context.Request.Headers.Origin.ToString();
-                    if (!string.IsNullOrEmpty(origin) && !IsLoopbackOrigin(origin))
+                    if (!string.IsNullOrEmpty(origin)
+                        && (!IsLoopbackOrigin(origin) || !IsSameOrigin(origin, context.Request)))
                     {
                         context.Response.StatusCode = StatusCodes.Status403Forbidden;
                         return;
@@ -252,6 +253,20 @@ public partial class BBDownApiServer
     internal static bool IsLoopbackOrigin(string origin)
         // 无法解析为绝对 URI 的 Origin 一律拒绝；其余判定委托给唯一实现
         => Uri.TryCreate(origin, UriKind.Absolute, out var uri) && IsLoopbackHost(uri.DnsSafeHost);
+
+    /// <summary>
+    /// 写端点的浏览器 Origin 必须与请求的 scheme、host、port 完全一致。
+    /// 只检查 localhost/回环 IP 会把不同端口上的网页也当成可信来源；/cancel 是简单 POST，
+    /// 可被这些网页用 HTML 表单跨源触发，即使浏览器不允许读取响应。
+    /// </summary>
+    private static bool IsSameOrigin(string origin, HttpRequest request)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        int requestPort = request.Host.Port ?? (request.IsHttps ? 443 : 80);
+        return uri.Scheme.Equals(request.Scheme, StringComparison.OrdinalIgnoreCase)
+            && uri.DnsSafeHost.Equals(request.Host.Host, StringComparison.OrdinalIgnoreCase)
+            && uri.Port == requestPort;
+    }
 
     /// <summary>
     /// 回环主机判定（**全库唯一实现**）：serve 的 Host 白名单（RF-15）、写端点的 Origin

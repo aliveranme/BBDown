@@ -75,7 +75,13 @@ public static class Logger
                 Share = FileShare.ReadWrite | FileShare.Delete,
             };
             if (!OperatingSystem.IsWindows())
+            {
+                // UnixCreateMode 只作用于新文件。升级时也收紧已有日志，避免旧版 umask
+                // 创建的 0644 文件继续暴露任务路径、URL 等操作者数据。
+                if (File.Exists(_logFilePath))
+                    File.SetUnixFileMode(_logFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
                 opts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
             var fs = new FileStream(_logFilePath, opts);
             return new StreamWriter(fs, new UTF8Encoding(false)) { AutoFlush = true };
         }

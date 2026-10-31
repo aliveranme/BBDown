@@ -125,6 +125,11 @@ public partial class BBDownApiServer
                 return;
             }
 
+            // UnixCreateMode 仅保护后续新建的临时文件。限制已有记录权限再读取，避免升级后
+            // 在第一次任务完成/原子替换前仍以旧的组/其他可读权限保存路径与提交 URL。
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(_taskFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
             var json = await File.ReadAllTextAsync(_taskFile, cancellationToken);
             var loaded = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.ListDownloadTask);
             if (loaded is null)

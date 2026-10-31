@@ -12,6 +12,7 @@
 - API 服务在任务解析失败或排队取消等终态也发送 Webhook；回调直连已校验的地址，不使用系统代理。
 - `--debug` 下配置合并日志不再回显 `-c/--cookie`、`--access-token` 的值（等号写法掩码值段、保留选项名）；合并结果本身保持原样传给命令解析。
 - serve 的任务记录（`bbdown-tasks.json`）与日志文件（`bbdown-api.log`）在 Unix 上创建即为仅属主可读写（chmod 600），与凭据文件 `BBDown.data` 一致，不再依赖 umask；两文件含绝对路径与提交 URL，属敏感操作者数据。
+- serve 拒绝跨 localhost 端口的浏览器写请求，补拦 Webhook DNS 返回的全零地址，并避免回调 URL 凭据写入日志；启动时也会收紧已有任务记录与日志文件的 Unix 权限。
 
 ## [1.7.8] - 2026-10-30
 

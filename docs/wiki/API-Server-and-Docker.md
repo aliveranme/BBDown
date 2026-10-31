@@ -39,6 +39,7 @@ BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_to
 2. **鉴权请求头**：启用 `--serve-token` 后，所有客户端请求均需携带请求头 `X-Serve-Token: <token>`，否则返回 `401 Unauthorized`。令牌优先经环境变量 `BBDOWN_SERVE_TOKEN` 注入，避免 `ps` 等进程列表暴露。
 3. **入参安全性过滤**：为防止远程代码执行、凭据外泄或路径穿越，API 提交的配置中以下危险字段一律被强制忽略：`aria2cArgs`、`aria2cPath`、`aria2cProxy`、`ffmpegPath`、`mp4boxPath`、`wvdPath`、`mp4decryptPath`、`workDir`、`insecure`、`forceHttp`、`userAgent`、`notifyWebhook`、`filePattern`、`multiFilePattern`、`drmKeyHex`、`drmKidHex`、`callBackWebHook`、`configFile`（任务固定输出到服务端默认目录模板；重试/超时等数值参数还会被钳制到受控范围）。`host/epHost/tvHost/uposHost` 四个 Host 字段仅接受 B 站官方域名白名单，非官方值一律回落官方默认；`area` 仅接受 `hk`/`tw`/`th`，其余值回落空。
 4. **反代与加密**：由于内置 HTTP 服务器不包含 HTTPS 传输加密，公网开放时强烈建议配置 Nginx / Caddy 反向代理。若前方确有可信反代，可加 `--trusted-proxy` 使认证失败限速按 `X-Forwarded-For` 的客户真实 IP 计键；无反代时切勿启用（客户端可伪造 XFF 绕过限速）。
+5. **浏览器写请求同源校验**：`/add-task`、`/cancel` 与 `/remove-finished` 只接受与 API 请求的 scheme、host、port 完全一致的回环 Origin。浏览器管理页面应与 API 使用同一来源；不同 localhost 端口之间的跨源写请求会被拒绝。不带 Origin 的命令行/API 客户端不受此浏览器检查影响。
 
 ---
 
