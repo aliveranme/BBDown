@@ -122,13 +122,16 @@ public partial class BBDownApiServer
                     statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests");
             }
             var task = EnqueueDownloadTask(req);
-            var bgTask = RunAcceptedTaskAsync(req, task);
+            // URL 解析可能在没有异步等待时直接失败并落盘；先登记任务，再异步放行执行，避免阻塞 HTTP 请求线程。
+            var taskStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var bgTask = RunAcceptedTaskAsync(req, task, taskStart.Task);
             // 登记在途任务：服务关停时据此等待所有后台任务收尾
             lock (_inFlightLock) { _inFlightTasks.Add(bgTask); _inFlightJobIds.Add(task.JobId); }
             _ = bgTask.ContinueWith(t =>
             {
                 lock (_inFlightLock) { _inFlightTasks.Remove(t); _inFlightJobIds.Remove(task.JobId); }
             }, TaskScheduler.Default);
+            taskStart.SetResult();
             return Results.Json(new AddTaskAccepted(task.JobId), AppJsonSerializerContext.Default.AddTaskAccepted, statusCode: StatusCodes.Status202Accepted);
         });
     }
