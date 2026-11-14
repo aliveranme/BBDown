@@ -9,7 +9,7 @@
 - **.NET SDK**：[.NET 10.0 SDK](https://dotnet.microsoft.com/download) 或更高版本
 - **IDE 与工具**：Visual Studio 2022+ / JetBrains Rider / VS Code (配合 C# Dev Kit)
 - **支持的操作系统**：Windows 10/11、macOS (Intel/Apple Silicon) 或 Linux (x64/arm64)
-- **外部依赖**：[FFmpeg](https://ffmpeg.org/)、aria2c 与 Bento4 的 mp4encrypt/mp4decrypt（本地工具集成测试需要）。当前 CI SDK 为 10.0.302，满足 `global.json` 的 10.0.300/latestPatch 约束。
+- **外部依赖**：[FFmpeg](https://ffmpeg.org/)、aria2c 与 Bento4 的 mp4encrypt/mp4decrypt（本地工具集成测试需要）。当前 CI SDK 为 10.0.403，与 `global.json` 的 `latestPatch` 约束一致。
 
 ---
 

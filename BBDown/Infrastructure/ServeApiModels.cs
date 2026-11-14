@@ -151,8 +151,6 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
 public record DownloadTaskCollection(List<DownloadTask> Running, List<DownloadTask> Finished);
 
 /// <summary>/add-task 的 202 响应体：返回任务 JobId（GUID），客户端可据此查询或取消。</summary>
-
-/// <summary>/add-task 的 202 响应体：返回任务 JobId（GUID），客户端可据此查询或取消。</summary>
 public record AddTaskAccepted(string TaskId);
 
 record struct RequestBodyBindingResult<T>(T? Result, Exception? Exception)

@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DOTNET_SDK_VERSION: "10.0.302"
+  DOTNET_SDK_VERSION: "10.0.403"
 
 jobs:
   locked-restore:
@@ -58,6 +58,44 @@ jobs:
       - name: Test (unit)
         # 排除全部集成类别：外部网络（NetworkIntegration）与本地 ffmpeg（LocalIntegration）
         run: dotnet test BBDown.sln -c Release --no-build --filter "Category!=Integration&Category!=NetworkIntegration&Category!=LocalIntegration"
+
+  # Windows 平台门禁：发布产物包含 win-x64/win-arm64，但此前单测与本地集成只在 Linux
+  # 运行。aria2 1.37.0 在 Windows 上对 --input-file=- 的控制文件写入行为与 Linux 不同，
+  # 曾导致中断后无 .aria2、预分配等长产物被误判完成（见 DownloadPipelineTests 的
+  # StaleTempControl 用例与 LocalToolIntegrationTests 的真实 aria2 用例）。
+  windows-build-and-aria2:
+    name: Windows Build & aria2 Integration
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Install aria2
+        run: choco install aria2 --no-progress --yes
+
+      - name: Verify aria2c is on PATH
+        run: aria2c --version
+
+      - name: Restore
+        run: dotnet restore BBDown.sln --locked-mode
+
+      - name: Test (unit)
+        run: dotnet test BBDown.sln -c Release --no-restore --filter "Category!=Integration&Category!=NetworkIntegration&Category!=LocalIntegration"
+
+      - name: Test (real aria2 resume on Windows)
+        # 只跑 aria2 用例：其余本地集成测试需要 ffmpeg/Bento4，Windows runner 不安装。
+        # BBDOWN_REQUIRE_LOCAL_TOOLS=1 保证 aria2 缺失时失败而不是静默空跑。
+        run: dotnet test BBDown.sln -c Release --no-build --filter "Category=LocalIntegration&FullyQualifiedName~Aria2c_RealInterruptedPreallocation"
+        env:
+          BBDOWN_REQUIRE_LOCAL_TOOLS: "1"
 
   vulnerability-scan:
     name: NuGet Vulnerability Scan

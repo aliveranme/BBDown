@@ -1,6 +1,6 @@
 # 构建阶段：Native AOT 发布（Directory.Build.props 已全局启用 PublishAot）。
 # 用 AOT 专用 SDK 镜像（预装 AOT 工具链，比通用 sdk 镜像构建更快更小）。
-FROM mcr.microsoft.com/dotnet/sdk:10.0.302-aot AS builder
+FROM mcr.microsoft.com/dotnet/sdk:10.0.403-aot AS builder
 
 WORKDIR /src
 
@@ -33,7 +33,7 @@ RUN apt-get update \
 
 # 运行阶段：runtime-deps 镜像仅含运行原生二进制的系统依赖（glibc 等），
 # 体积远小于 aspnet 镜像。BBDown 以原生可执行文件直接启动，不再 dotnet BBDown.dll。
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.14
 
 WORKDIR /app
 
