@@ -14,6 +14,12 @@
 - serve 的任务记录（`bbdown-tasks.json`）与日志文件（`bbdown-api.log`）在 Unix 上创建即为仅属主可读写（chmod 600），与凭据文件 `BBDown.data` 一致，不再依赖 umask；两文件含绝对路径与提交 URL，属敏感操作者数据。
 - serve 拒绝跨 localhost 端口的浏览器写请求，补拦 Webhook DNS 返回的全零地址，并避免回调 URL 凭据写入日志；启动时也会收紧已有任务记录与日志文件的 Unix 权限。
 - serve 的 `/add-task` 先登记在途任务再异步启动执行；本地解析失败及任务记录落盘不再阻塞 `202 Accepted` 响应。
+- **Windows 下 aria2c 断点续传恢复**：aria2 1.37.0 的 stdin 输入模式（`--input-file=-`）在 Windows 上无法正常收尾控制文件，中断和成功都会遗留 `*.aria2__temp` 而没有 `*.aria2`。Windows 改用用户临时目录下的输入文件（进程结束立即删除），Unix 保持 stdin；同时把 `*.aria2__temp` 视为未收尾状态，丢弃预分配的等长产物后完整重下，避免损坏文件被“等长即完成”误判为成品。
+
+### 工程与验证
+
+- 构建 SDK 升级到 `10.0.403`（`Microsoft.DotNet.ILCompiler 10.0.14`），修复 `CVE-2026-111497` / `GHSA-p3jp-9v83-76w9`（Brotli 解码器越界写，High）；同步 CI、mise、Docker 镜像与全部 RID 锁文件。
+- PR CI 增加 Windows 单测与真实 aria2 断点续传集成门禁，覆盖此前只在 Linux 验证的 aria2 控制文件行为。
 
 ## [1.7.8] - 2026-10-30
 

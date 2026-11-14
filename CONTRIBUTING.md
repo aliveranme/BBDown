@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- [.NET 10.0 SDK](https://dotnet.microsoft.com/download)：`global.json` 固定 10.0.300 功能带并允许最新补丁；当前 CI / AOT 锁文件验证版本为 10.0.302。
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download)：`global.json` 固定 10.0.403 并允许最新补丁；当前 CI / AOT 锁文件验证版本为 10.0.403。
 - 支持的操作系统：Windows / Linux / macOS
 
 ## 构建

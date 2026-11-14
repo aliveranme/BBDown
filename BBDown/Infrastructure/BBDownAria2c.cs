@@ -37,9 +37,10 @@ static class BBDownAria2c
 
     public static async Task DownloadFileByAria2cAsync(string url, string path, string extraArgs, CancellationToken token = default)
     {
-        // URL、请求头、目标路径都通过 stdin 的 input-file 传入，而非命令行参数。
+        // URL、请求头、目标路径都通过 aria2 的 input-file 传入，而非命令行参数。
         // Cookie 里含 SESSDATA 等登录凭据，放进命令行会被本机其他用户从进程列表
-        // （ps / /proc）直接读到；走 stdin 则既不进 ps 也不落盘。
+        // （ps / /proc）直接读到；Unix 走 stdin（既不进 ps 也不落盘），Windows 因
+        // 控制文件收尾缺陷改用用户临时文件（见下方平台分流说明）。
         // input-file 格式：URI 单独一行，其后缩进行为该 URI 的专属选项。
         // URL 与 Cookie 都是外部输入（API 响应/用户配置）：换行即 input-file 的指令行
         // 分隔符，不剥离可注入任意 aria2c 指令行（新 URI/all-proxy/dir 等，RF-21）。
@@ -59,12 +60,50 @@ static class BBDownAria2c
         // OperationCanceledException/TimeoutException，这里只处理正常结束后的非零码。
         // --continue=true 断点续传：中断留下的 .aria2 控制文件让下次运行从中断处续传，
         // 而非在 --allow-overwrite 下每次从头重下。
-        int code = await RunCommandCodeAsync(ARIA2C,
-            $"--auto-file-renaming=false --download-result=hide --allow-overwrite=true --continue=true --console-log-level=warn -x16 -s16 -j16 -k5M {extraArgs} --input-file=-",
-            input.ToString(), token);
-        if (code != 0)
-            throw new InvalidOperationException(
-                $"aria2c 下载失败，退出码 {code}（{DescribeAria2cExitCode(code)}），目标: {path}");
+        //
+        // 输入文件传递方式按平台分流：Windows 上 aria2 1.37.0 的 --input-file=-
+        // 无法正常收尾控制文件——中断和成功都会留下 *.aria2__temp 而没有 *.aria2，
+        // 断点续传失效；更糟的是预分配后的等长产物会被 PrepareAria2cTarget 误判为
+        // 已完成（见 BBDownDownloadUtil 的 __temp 守卫）。改用用户临时目录下的输入
+        // 文件后控制文件恢复正常；文件仅存活于本次 aria2 进程期间，失败路径在 finally
+        // 删除。Unix 保持 stdin（控制文件行为正常，且 Cookie 不落盘）。
+        string? inputFile = null;
+        try
+        {
+            string inputArgument;
+            string? stdinContent;
+            if (OperatingSystem.IsWindows())
+            {
+                inputFile = Path.Combine(Path.GetTempPath(), $"bbdown-aria2-{Guid.NewGuid():N}.txt");
+                // 写完即关闭：aria2c 以普通只读方式打开输入文件。临时文件仅存活于本次
+                // aria2 进程期间，正常/失败/取消路径都在 finally 删除；进程被强杀时可能
+                // 残留，但文件名随机且位于当前用户 %TEMP%。
+                await File.WriteAllTextAsync(inputFile, input.ToString(), new UTF8Encoding(false), token);
+                inputArgument = $"--input-file=\"{inputFile}\"";
+                stdinContent = null;
+            }
+            else
+            {
+                inputArgument = "--input-file=-";
+                stdinContent = input.ToString();
+            }
+
+            int code = await RunCommandCodeAsync(ARIA2C,
+                $"--auto-file-renaming=false --download-result=hide --allow-overwrite=true --continue=true --console-log-level=warn -x16 -s16 -j16 -k5M {extraArgs} {inputArgument}",
+                stdinContent, token);
+            if (code != 0)
+                throw new InvalidOperationException(
+                    $"aria2c 下载失败，退出码 {code}（{DescribeAria2cExitCode(code)}），目标: {path}");
+        }
+        finally
+        {
+            if (inputFile is not null)
+            {
+                try { if (File.Exists(inputFile)) File.Delete(inputFile); }
+                catch (IOException) { /* 临时文件删除失败不影响下载结果 */ }
+                catch (UnauthorizedAccessException) { /* 同上 */ }
+            }
+        }
     }
 
     /// <summary>aria2c 常见退出码的中文释义，用于错误信息可读化。</summary>

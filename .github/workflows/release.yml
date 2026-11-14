@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  DOTNET_SDK_VERSION: "10.0.302"
+  DOTNET_SDK_VERSION: "10.0.403"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # 内置 mp4decrypt（Bento4，GPLv2）的固定版本与归档 SHA256：发布包开箱即用，
   # 不再要求用户自行安装；下载源被篡改/静默换包会让构建失败（供应链固定）。

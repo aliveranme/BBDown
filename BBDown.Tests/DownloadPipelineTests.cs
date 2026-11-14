@@ -804,6 +804,69 @@ public class DownloadPipelineTests
     }
 
     /// <summary>
+    /// 回归（Windows + aria2 1.37.0）：stdin 输入模式会遗留 .aria2__temp 且不生成 .aria2，
+    /// 预分配到远端总长的产物长度恰好相等。该状态必须被识别为未完成并整组丢弃重下，
+    /// 不能走"等长即完成"跳过分支——否则中断后的自动重试会把损坏文件当成品。
+    /// </summary>
+    [Fact]
+    public async Task PrepareAria2cTarget_StaleTempControl_PurgesAndRedownloads()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "complete-16-bytes");
+            var control = path + ".aria2";
+            var tempControl = path + ".aria2__temp";
+            File.WriteAllText(tempControl, "ctrl-temp");
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?qn=80"),
+                16, null, null);
+            File.WriteAllText(path + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
+                "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 16, headers: null, contentHeaders: null);
+
+            Assert.False(skip, "存在未收尾的 .aria2__temp 时不得跳过 aria2c");
+            Assert.False(File.Exists(path), "等长但未收尾的产物应被删除重下");
+            Assert.False(File.Exists(control), "残留控制文件应被删除");
+            Assert.False(File.Exists(tempControl), "未收尾的控制文件临时文件应被删除");
+            Assert.True(File.Exists(path + ".manifest.json"), "重下前应写入当前资源的新清单");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>完成/跳过路径清理 aria2 控制文件中间态，但不触碰成品与完成证书。</summary>
+    [Fact]
+    public void CleanStaleWorkArtifacts_DeletesAria2TempControl()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "complete");
+            File.WriteAllText(path + ".aria2__temp", "ctrl-temp");
+            File.WriteAllText(path + ".manifest.json", "{}");
+
+            BBDownDownloadUtil.CleanStaleWorkArtifactsFor(path);
+
+            Assert.False(File.Exists(path + ".aria2__temp"), "控制文件中间态应被清理");
+            Assert.True(File.Exists(path), "成品不得被清理");
+            Assert.True(File.Exists(path + ".manifest.json"), "完成证书不得被清理");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
     /// 回归：已完整下载但缺身份清单（旧版残留/清单丢失）的文件，不得被纯长度跳过——否则
     /// 无法确认其内容属于当前资源。保守删除重下（安全但浪费，与 CanResumeFrom 缺清单一致）。
     /// </summary>

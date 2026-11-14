@@ -14,12 +14,21 @@ public class BBDownAria2cTests
     {
         private readonly int _exitCode;
         public List<ExternalProcessSpec> Specs { get; } = [];
+        /// <summary>每次调用实际提供给 aria2c 的 input-file 内容（stdin 或临时文件）。</summary>
+        public List<string> Inputs { get; } = [];
+        /// <summary>Windows 走临时输入文件时记录路径（Unix 为 null），供清理断言。</summary>
+        public List<string?> InputFilePaths { get; } = [];
 
         public FakeAria2cRunner(int exitCode) => _exitCode = exitCode;
 
         public Task<int> RunAsync(ExternalProcessSpec spec, CancellationToken cancellationToken = default)
         {
             Specs.Add(spec);
+            // Windows 使用真实临时输入文件；必须在调用期间读取——调用方在 finally 中删除。
+            var inputArg = spec.Arguments.FirstOrDefault(a => a.StartsWith("--input-file=", StringComparison.Ordinal));
+            var inputPath = inputArg is null ? "-" : inputArg["--input-file=".Length..];
+            Inputs.Add(inputPath == "-" ? spec.StandardInput ?? "" : File.ReadAllText(inputPath));
+            InputFilePaths.Add(inputPath == "-" ? null : inputPath);
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_exitCode);
         }
@@ -61,8 +70,12 @@ public class BBDownAria2cTests
             var spec = fake.Specs.Single();
             // 断点续传已启用：中断留下的 .aria2 控制文件可续传，而非整文件重下
             Assert.Contains(spec.Arguments, a => a.Contains("--continue=true"));
-            // 凭据走 stdin 而非命令行参数
-            Assert.NotNull(spec.StandardInput);
+            // 凭据走 stdin 或 Windows 私有临时文件，均不进入命令行参数
+            Assert.NotEmpty(fake.Inputs.Single());
+            Assert.DoesNotContain(spec.Arguments, a => a.Contains("SESSDATA", StringComparison.Ordinal));
+            // Windows 临时输入文件在 aria2c 结束后立即删除
+            var inputFilePath = fake.InputFilePaths.Single();
+            if (inputFilePath is not null) Assert.False(File.Exists(inputFilePath), "临时 input-file 应被删除");
         }
         finally
         {
@@ -117,7 +130,7 @@ public class BBDownAria2cTests
             await BBDownAria2c.DownloadFileByAria2cAsync(
                 "http://cdn.example/a.mp4\nhttp://evil.example/b.mp4", "out/a.mp4", "");
 
-            var stdin = fake.Specs.Single().StandardInput;
+            var stdin = fake.Inputs.Single();
             // 换行剥离后 cookie 值保持单行：注入的 "  all-proxy=..." 不再构成独立指令行
             //（前面没有换行分隔符，aria2c 只把整行当作 Cookie 头的值）
             Assert.DoesNotContain("\n  all-proxy", stdin);

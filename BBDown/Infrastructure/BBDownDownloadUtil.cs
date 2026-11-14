@@ -610,8 +610,22 @@ internal static class BBDownDownloadUtil
         HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders, CancellationToken token = default)
     {
         string controlFile = path + ".aria2";
-        bool partialExists = File.Exists(path) || File.Exists(controlFile);
-        if (partialExists)
+        string tempControlFile = path + ".aria2__temp";
+        // __temp 是 aria2 控制文件的中间态：正常收尾会 rename 成 .aria2 并删除它。
+        // Windows + aria2 1.37.0 的 stdin 输入模式会把它遗留到进程退出之后（中断和成功
+        // 都会出现），此时既没有可续传的块映射，预分配后的等长产物也不可信——必须整组
+        // 丢弃重下，不能走下面“等长即完成”的跳过分支。成功路径的残留由
+        // CleanStaleWorkArtifactsFor 清理。
+        if (File.Exists(tempControlFile))
+        {
+            Logger.LogDebug("aria2c: 发现未收尾的控制文件临时文件（{0}），丢弃不可信残留后完整重下", tempControlFile);
+            bool purged = TryDeleteStale(path) & TryDeleteStale(controlFile) & TryDeleteStale(tempControlFile);
+            DeleteResumeManifest(path);
+            if (!purged)
+                throw new InvalidOperationException(
+                    $"aria2c 无法清理未收尾的控制文件残留: {path}，已中止下载（请手动删除后重试）");
+        }
+        else if (File.Exists(path) || File.Exists(controlFile))
         {
             long partialLength = File.Exists(path) ? new FileInfo(path).Length : 0;
             // 既有 partial/.aria2：先做身份校验。身份可信（同资源中断，清单存在且匹配）
@@ -1051,6 +1065,9 @@ internal static class BBDownDownloadUtil
         TryDeleteStale(tmpName);
         DeleteResumeManifest(tmpName);
         TryDeleteStale(path + ".aria2");
+        // aria2 1.37.0 Windows stdin 模式会遗留的控制文件中间态；成功路径一并回收，
+        // 避免下次 PrepareAria2cTarget 把它当成“下载未收尾”而整组重下。
+        TryDeleteStale(path + ".aria2__temp");
         DeleteResumeManifest(ClipPathFor(path, 0));
     }
 
