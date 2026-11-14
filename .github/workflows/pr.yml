@@ -2,6 +2,9 @@ name: Pull Request Checks
 
 on:
   pull_request:
+  # 手动触发：Windows 单测/真实 aria2 门禁只在 PR 上跑，无法验证直接落在
+  # master 的提交（push 只触发 build_latest 的 Ubuntu 测试与 Windows 发布构建）。
+  workflow_dispatch:
 
 concurrency:
   group: pr-${{ github.ref }}
